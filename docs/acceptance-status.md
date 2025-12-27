@@ -1,24 +1,98 @@
 # Acceptance Criteria Status
 
-This file tracks the implementation state against the migration/acceptance criteria outlined for the Paniq Rust port.
+This file tracks the implementation state of paniq-rs against the phases outlined in `docs/paniq-rs-implementation-plan.md`.
 
-## Implemented
-- **Obfuscation layer (Phase 1)**: `paniq-rs` implements the `Obf` trait, chain parsing, magic headers, and the framer with deterministic RNG controls. Unit tests cover obfuscators, chain parsing, header parsing, framing encode/decode, and seeded determinism.
-- **Envelope layer (Phase 2)**: padding policy, transport payload framing, replay cache, MAC1, encrypted timestamps, and deterministic in-memory handshakes are implemented with unit tests.
-- **Handshake pacing/cookies (Phase 2.6/2.7)**: client-side pacing plus server-issued cookie replies now gate handshake completion in the in-memory harness.
-- **Cross-language smoke checks**: `paniq-rs/tests/go_parity.rs` exercises multiple obfuscation specs against the Go helper (`cd _reference/paniq && go run ./cmd/obf-vector`) to validate byte-for-byte parity for deterministic chains.
-- **Golden vector coverage (Phase 5.1)**: `paniq-rs/obf-parity/vectors.json` captures deterministic obfuscation, framing, transport, MAC1, encrypted timestamp cases, and replay cache decisions that Rust tests replay.
-- **QUIC socket framing (Phase 3)**: obfuscating UDP sockets wrap Quinn's async socket abstraction so QUIC datagrams are encoded/decoded with the obfuscation framer, and UDP-backed `PacketConn` support enables running the envelope handshake over real sockets.
-- **SOCKS5 server (Phase 4)**: RFC 1928/1929 CONNECT handling with optional username/password authentication, plus bidirectional relay over an injected connector to keep tests deterministic.
+## Implementation Status by Phase
 
-## Pending / Not Yet Implemented
-- **QUIC integration (Phase 3)**: Quinn-backed client/server wrappers now have an obfuscating end-to-end QUIC round-trip test over real UDP sockets, but broader integration coverage is still pending.
-- **Golden vector expansion (Phase 5.1)**: vector files now include replay cache decisions; still need to add more envelope/handshake cases, ideally mirrored from the Go implementation.
-- **End-to-end and fuzzing (Phase 5.2/5.3)**: no Rust-side integration, packet-loss simulation, or fuzz harnesses are present.
-- **Tooling/examples (Phase 6)**: CLI tooling and examples described in the plan have not been added for the Rust crate.
+### Phase 1: Core Obfuscation Layer ✅ COMPLETE
+- **Types and Config**: `src/obf/config.rs` defines `Config` with all obfuscation parameters
+- **Obf trait**: `src/obf/mod.rs` defines the obfuscation trait
+- **Obfuscator implementations**: All 8 obfuscators implemented in `src/obf/`
+  - `obf_bytes.rs` (<b hex>)
+  - `obf_timestamp.rs` (<t>)
+  - `obf_rand.rs` (<r N>)
+  - `obf_randchars.rs` (<rc N>)
+  - `obf_randdigits.rs` (<rd N>)
+  - `obf_data.rs` (<d>)
+  - `obf_datastring.rs` (<ds>)
+  - `obf_datasize.rs` (<dz N>)
+- **Magic Headers**: `src/obf/header.rs` and `src/obf/headers.rs` implement H1-H4
+- **Framer**: `src/obf/framer.rs` implements message type framing
+- **Tests**: Unit tests in `src/obf/tests.rs` cover all obfuscators, chains, headers, and framing
 
-## Next Steps
-- Expand Go↔Rust parity to cover headers, framer outputs, and envelope/MAC layers once those components are ported.
-- Add golden vector fixtures exported from the Go implementation and exercise them from Rust tests.
-- Implement the envelope, QUIC, and SOCKS5 layers in Rust to satisfy the remaining phases.
-- Introduce fuzz targets for decoders and replay cache logic once available.
+### Phase 2: Envelope Layer ✅ COMPLETE
+- **Transport Payload**: `src/envelope/transport.rs` implements counter, length prefix, payload, and padding
+- **Padding Policy**: `src/envelope/padding.rs` implements min/max/burst padding
+- **Replay Cache**: `src/envelope/replay.rs` implements time-based sliding window cache
+- **MAC1 Signature**: `src/envelope/mac1.rs` implements Blake2s-MAC1 computation and verification
+- **Encrypted Timestamp**: `src/envelope/enc_timestamp.rs` implements TAI64N, X25519, AEAD encryption
+- **Client Handshake**: `src/envelope/client.rs` implements junk/signature pacing, cookie replies
+- **Server Connection**: `src/envelope/server.rs` implements peer state, cookie issuance, preamble handling
+- **Tests**: Unit tests in `src/envelope/tests.rs` cover all envelope components
+
+### Phase 3: QUIC Integration ✅ COMPLETE
+- **QUIC Client**: `src/quic/client.rs` implements Quinn client with obfuscating UDP socket wrapper
+- **QUIC Server**: `src/quic/server.rs` implements Quinn server endpoint with obfuscating socket
+- **Handshake Integration**: `tests/quic_handshake.rs` tests envelope handshake over UDP
+- **End-to-End Test**: `tests/quic_roundtrip.rs` tests full QUIC round-trip with obfuscation
+
+### Phase 4: SOCKS5 Daemon ✅ COMPLETE
+- **SOCKS5 Server**: `src/socks5/mod.rs` implements RFC 1928/1929
+  - SOCKS5 protocol negotiation
+  - Username/password authentication (RFC 1929)
+  - CONNECT command only
+  - IPv4, IPv6, and domain name addresses
+- **Relay Connector**: Pluggable `RelayConnector` trait for deterministic testing
+- **Tests**: Comprehensive unit tests in `src/socks5/mod.rs` cover auth flows and relay
+
+### Phase 5: Testing and Parity ⚠️ PARTIAL
+- **Golden Vectors**: `tests/golden_vectors.rs` tests all components against `obf-parity/vectors.json`
+  - Chains, frames, transport, MAC1, encrypted timestamps, replay cache
+- **Vector Generation**: `examples/dump_vectors.rs` generates golden vectors from Rust implementation
+- **Go Parity Test**: `tests/go_parity.rs` exists but is disabled
+  - Reason: The `obf-vector` helper tool needs to be built in the Go reference implementation
+  - This tool would accept `--spec` and `--input` arguments and output obfuscated hex
+  - **Action Required**: Create `_reference/paniq/cmd/obf-vector` to enable cross-language parity testing
+- **Missing**:
+  - Fuzzing harnesses (planned in Phase 5.3)
+  - Packet-loss simulation tests
+  - End-to-end integration tests with real network conditions
+
+### Phase 6: Tooling and Examples ⚠️ PARTIAL
+- **Vector Dump Tool**: `examples/dump_vectors.rs` generates JSON test vectors
+- **Missing**:
+  - CLI tools (`socks5d`, `proxy-server` as described in the plan)
+  - Configuration file loading/saving
+  - Profile generation utilities
+
+## Pending Work
+
+### High Priority
+- **Go `obf-vector` helper tool**: Create `_reference/paniq/cmd/obf-vector`
+  - Accepts: `--spec <chain-spec>`, `--input <hex>`
+  - Outputs: Obfuscated hex string
+  - Purpose: Enable `tests/go_parity.rs` cross-language parity testing
+- Add fuzzing targets for:
+  - Frame decoder (`obf/framer.rs`)
+  - Chain parser (`obf/mod.rs`)
+  - Payload decoder (`envelope/transport.rs`)
+  - Replay cache (`envelope/replay.rs`)
+
+### Medium Priority
+- Implement CLI tools:
+  - `socks5d`: Standalone SOCKS5 daemon binary
+  - `proxy-server`: Standalone proxy server binary
+- Add integration tests with packet-loss simulation
+- Expand golden vector coverage with more envelope/handshake cases
+
+### Low Priority
+- Add more real-world integration tests
+- Performance benchmarks
+
+## Dependencies
+
+Required features (via Cargo features):
+- `quic`: Enables QUIC integration (quinn, rustls)
+- `socks5`: Enables SOCKS5 daemon (tokio, async-trait)
+
+Default: Both features are enabled by default.
