@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document outlines a plan to implement `paniq-rs`, a Rust implementation of the paniq transport protocol. The Go implementation in `paniq/` provides AWG (AmneziaWG) parity obfuscation over UDP, with an envelope layer handling handshakes, replay protection, and transport payload framing.
+This document outlines a plan to implement `paniq-rs`, a Rust implementation of the paniq transport protocol. The Go implementation in `_reference/paniq/` provides AWG (AmneziaWG) parity obfuscation over UDP, with an envelope layer handling handshakes, replay protection, and transport payload framing.
 
 ## Architecture Summary
 
