@@ -4,7 +4,6 @@ use std::process::Command;
 use hex::encode;
 use paniq::obf::parse_chain;
 
-#[ignore = "obf-vector helper does not exist in reference implementation"]
 #[test]
 fn go_rust_chain_parity_smoke() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

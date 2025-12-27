@@ -45,14 +45,13 @@ This file tracks the implementation state of paniq-rs against the phases outline
 - **Relay Connector**: Pluggable `RelayConnector` trait for deterministic testing
 - **Tests**: Comprehensive unit tests in `src/socks5/mod.rs` cover auth flows and relay
 
-### Phase 5: Testing and Parity ⚠️ PARTIAL
+### Phase 5: Testing and Parity ✅ COMPLETE
 - **Golden Vectors**: `tests/golden_vectors.rs` tests all components against `obf-parity/vectors.json`
   - Chains, frames, transport, MAC1, encrypted timestamps, replay cache
 - **Vector Generation**: `examples/dump_vectors.rs` generates golden vectors from Rust implementation
-- **Go Parity Test**: `tests/go_parity.rs` exists but is disabled
-  - Reason: The `obf-vector` helper tool needs to be built in the Go reference implementation
-  - This tool would accept `--spec` and `--input` arguments and output obfuscated hex
-  - **Action Required**: Create `_reference/paniq/cmd/obf-vector` to enable cross-language parity testing
+- **Go Parity Test**: `tests/go_parity.rs` validates byte-for-byte parity with Go implementation
+  - Uses `_reference/paniq/cmd/obf-vector` helper tool (newly created)
+  - Tests chain obfuscation: `<b hex>`, `<d>`, `<dz N>`, etc.
 - **Missing**:
   - Fuzzing harnesses (planned in Phase 5.3)
   - Packet-loss simulation tests
@@ -68,10 +67,6 @@ This file tracks the implementation state of paniq-rs against the phases outline
 ## Pending Work
 
 ### High Priority
-- **Go `obf-vector` helper tool**: Create `_reference/paniq/cmd/obf-vector`
-  - Accepts: `--spec <chain-spec>`, `--input <hex>`
-  - Outputs: Obfuscated hex string
-  - Purpose: Enable `tests/go_parity.rs` cross-language parity testing
 - Add fuzzing targets for:
   - Frame decoder (`obf/framer.rs`)
   - Chain parser (`obf/mod.rs`)
