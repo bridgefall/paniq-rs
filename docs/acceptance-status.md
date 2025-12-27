@@ -50,10 +50,15 @@ This file tracks the implementation state of paniq-rs against the phases outline
   - Chains, frames, transport, MAC1, encrypted timestamps, replay cache
 - **Vector Generation**: `examples/dump_vectors.rs` generates golden vectors from Rust implementation
 - **Go Parity Test**: `tests/go_parity.rs` validates byte-for-byte parity with Go implementation
-  - Uses `_reference/paniq/cmd/obf-vector` helper tool (newly created)
+  - Uses `_reference/paniq/cmd/obf-vector` helper tool
   - Tests chain obfuscation: `<b hex>`, `<d>`, `<dz N>`, etc.
+- **Fuzzing Targets**: `fuzz/fuzz_targets/` provides libFuzzer targets for:
+  - Chain parser (`obf/mod.rs`)
+  - Frame decoder (`obf/framer.rs`)
+  - Payload decoder (`envelope/transport.rs`)
+  - Replay cache (`envelope/replay.rs`)
+  - Run with: `rustup run nightly cargo fuzz run main`
 - **Missing**:
-  - Fuzzing harnesses (planned in Phase 5.3)
   - Packet-loss simulation tests
   - End-to-end integration tests with real network conditions
 
@@ -67,11 +72,10 @@ This file tracks the implementation state of paniq-rs against the phases outline
 ## Pending Work
 
 ### High Priority
-- Add fuzzing targets for:
-  - Frame decoder (`obf/framer.rs`)
-  - Chain parser (`obf/mod.rs`)
-  - Payload decoder (`envelope/transport.rs`)
-  - Replay cache (`envelope/replay.rs`)
+- ~~Add fuzzing targets~~ ✅ Complete
+  - `fuzz/fuzz_targets/` contains targets for chain parser, frame decoder, payload decoder, replay cache
+  - **Note**: Requires nightly Rust - see `fuzz/README.md` for setup instructions
+  - Run with: `rustup run nightly cargo fuzz run main`
 
 ### Medium Priority
 - Implement CLI tools:
