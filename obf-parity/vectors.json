@@ -1,0 +1,93 @@
+{
+  "seed": 12345,
+  "chains": [
+    {
+      "spec": "<b 0x01><r 4><rc 6><d>",
+      "input_hex": "41424344",
+      "output_hex": "0156d15d884d534441784741424344"
+    },
+    {
+      "spec": "<rd 4><ds><dz 2>",
+      "input_hex": "68656c6c6f",
+      "output_hex": "38313936614756736247380005"
+    }
+  ],
+  "frames": [
+    {
+      "msg_type": 1,
+      "header": "100",
+      "padding": 0,
+      "payload_hex": "010203",
+      "output_hex": "64000000010203"
+    }
+  ],
+  "transport": [
+    {
+      "counter": 7,
+      "padding": 3,
+      "payload_hex": "61626364",
+      "output_hex": "000000000000000700046162636489e21b"
+    }
+  ],
+  "mac1": [
+    {
+      "key_hex": "30663165326433633462356136393738",
+      "input_hex": "6665656466616365",
+      "output_hex": "51760a8c4290f040159410b5f2fde105"
+    }
+  ],
+  "enc_timestamp": [
+    {
+      "client_secret_hex": "0303030303030303030303030303030303030303030303030303030303030303",
+      "server_secret_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+      "timestamp": 1700000000,
+      "nonce_hex": "7c8aa82335e50a487c687d15",
+      "ciphertext_hex": "f5a6af1f0125444ea664dd8d44d2fa3ac5a51feb95094464f1ee9546",
+      "ephemeral_hex": "5dfedd3b6bd47f6fa28ee15d969d5bb0ea53774d488bdaf9df1c6e0124b3ef22"
+    }
+  ],
+  "replay": [
+    {
+      "window_secs": 5,
+      "max_entries": 3,
+      "events": [
+        {
+          "timestamp": 1000000,
+          "payload_hex": "616c706861",
+          "mac1_hex": "0102030405060708090a0b0c0d0e0f10",
+          "accepted": true
+        },
+        {
+          "timestamp": 1000000,
+          "payload_hex": "616c706861",
+          "mac1_hex": "0102030405060708090a0b0c0d0e0f10",
+          "accepted": false
+        },
+        {
+          "timestamp": 1000002,
+          "payload_hex": "62657461",
+          "mac1_hex": "0102030405060708090a0b0c0d0e0f10",
+          "accepted": true
+        },
+        {
+          "timestamp": 1000007,
+          "payload_hex": "616c706861",
+          "mac1_hex": "0102030405060708090a0b0c0d0e0f10",
+          "accepted": true
+        },
+        {
+          "timestamp": 1000008,
+          "payload_hex": "67616d6d61",
+          "mac1_hex": "0102030405060708090a0b0c0d0e0f10",
+          "accepted": true
+        },
+        {
+          "timestamp": 1000009,
+          "payload_hex": "64656c7461",
+          "mac1_hex": "0102030405060708090a0b0c0d0e0f10",
+          "accepted": true
+        }
+      ]
+    }
+  ]
+}

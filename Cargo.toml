@@ -1,0 +1,33 @@
+[package]
+name = "paniq"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8"
+getrandom = "0.2"
+thiserror = "1.0"
+hex = "0.4"
+base64 = "0.21"
+blake2 = { version = "0.10" }
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+subtle = "2.5"
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+tokio = { version = "1.35", features = ["full"], optional = true }
+quinn = { version = "0.10", optional = true }
+rustls = { version = "0.21", optional = true }
+tracing = { version = "0.1", optional = true }
+async-trait = { version = "0.1", optional = true }
+
+[features]
+default = []
+quic = ["quinn", "rustls", "tokio", "tracing"]
+socks5 = ["tokio", "async-trait"]
+
+[dev-dependencies]
+rand_chacha = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rcgen = "0.12"
