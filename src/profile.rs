@@ -1,0 +1,415 @@
+// Profile configuration for paniq client
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::fs;
+use std::time::Duration;
+
+use crate::obf::Config as ObfConfig;
+
+/// Profile configuration containing proxy address, QUIC settings, and obfuscation
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Profile {
+    pub name: String,
+    pub proxy_addr: String,
+
+    #[serde(default)]
+    #[serde(with = "serde_duration::opt")]
+    pub handshake_timeout: Option<Duration>,
+
+    #[serde(default = "default_handshake_attempts")]
+    pub handshake_attempts: usize,
+
+    #[serde(default)]
+    #[serde(with = "serde_duration::opt_u64_millis")]
+    pub preamble_delay_ms: Option<u64>,
+
+    #[serde(default)]
+    #[serde(with = "serde_duration::opt_u64_millis")]
+    pub preamble_jitter_ms: Option<u64>,
+
+    #[serde(default)]
+    pub quic: Option<QuicConfig>,
+
+    #[serde(default)]
+    pub transport_padding: Option<TransportPadding>,
+
+    #[serde(default)]
+    pub obfuscation: ObfuscationConfig,
+}
+
+fn default_handshake_attempts() -> usize { 3 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct QuicConfig {
+    #[serde(default = "default_max_packet_size")]
+    pub max_packet_size: usize,
+
+    #[serde(default = "default_max_payload")]
+    pub max_payload: usize,
+
+    #[serde(default)]
+    #[serde(with = "serde_duration::default")]
+    pub keepalive: Duration,
+
+    #[serde(default)]
+    #[serde(with = "serde_duration::default")]
+    pub idle_timeout: Duration,
+
+    #[serde(default = "default_max_streams")]
+    pub max_streams: usize,
+}
+
+fn default_max_packet_size() -> usize { 1350 }
+fn default_max_payload() -> usize { 1200 }
+fn default_max_streams() -> usize { 256 }
+#[allow(dead_code)]
+fn default_duration() -> Duration { Duration::from_secs(30) }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TransportPadding {
+    #[serde(default = "default_pad_min")]
+    pub pad_min: usize,
+
+    #[serde(default = "default_pad_max")]
+    pub pad_max: usize,
+
+    #[serde(default = "default_pad_burst_min")]
+    pub pad_burst_min: usize,
+
+    #[serde(default = "default_pad_burst_max")]
+    pub pad_burst_max: usize,
+
+    #[serde(default = "default_pad_burst_prob")]
+    pub pad_burst_prob: f64,
+}
+
+fn default_pad_min() -> usize { 16 }
+fn default_pad_max() -> usize { 96 }
+fn default_pad_burst_min() -> usize { 96 }
+fn default_pad_burst_max() -> usize { 104 }
+fn default_pad_burst_prob() -> f64 { 0.02 }
+
+/// Obfuscation configuration
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct ObfuscationConfig {
+    #[serde(default)]
+    pub jc: i32,
+
+    #[serde(default)]
+    pub jmin: i32,
+
+    #[serde(default)]
+    pub jmax: i32,
+
+    #[serde(default)]
+    pub s1: i32,
+
+    #[serde(default)]
+    pub s2: i32,
+
+    #[serde(default)]
+    pub s3: i32,
+
+    #[serde(default)]
+    pub s4: i32,
+
+    #[serde(default)]
+    pub h1: String,
+
+    #[serde(default)]
+    pub h2: String,
+
+    #[serde(default)]
+    pub h3: String,
+
+    #[serde(default)]
+    pub h4: String,
+
+    #[serde(default)]
+    pub i1: String,
+
+    #[serde(default)]
+    pub i2: String,
+
+    #[serde(default)]
+    pub i3: String,
+
+    #[serde(default)]
+    pub i4: String,
+
+    #[serde(default)]
+    pub i5: String,
+
+    #[serde(default)]
+    pub server_public_key: String,
+
+    /// Server private key (only for server-side, should not be in client profiles)
+    #[serde(default)]
+    pub server_private_key: String,
+
+    #[serde(default = "default_true")]
+    pub signature_validate: bool,
+
+    #[serde(default)]
+    #[serde(with = "serde_bool")]
+    pub require_timestamp: Option<bool>,
+
+    #[serde(default = "default_true")]
+    pub encrypted_timestamp: bool,
+
+    #[serde(default = "default_true")]
+    pub require_encrypted_timestamp: bool,
+
+    #[serde(default)]
+    pub legacy_mode_enabled: bool,
+
+    #[serde(default = "default_skew_soft_seconds")]
+    pub skew_soft_seconds: i64,
+
+    #[serde(default = "default_skew_hard_seconds")]
+    pub skew_hard_seconds: i64,
+
+    #[serde(default = "default_replay_window_seconds")]
+    pub replay_window_seconds: usize,
+
+    #[serde(default = "default_replay_cache_size")]
+    pub replay_cache_size: usize,
+
+    #[serde(default)]
+    pub transport_replay: bool,
+
+    #[serde(default)]
+    pub transport_replay_limit: u64,
+
+    #[serde(default = "default_rate_limit_pps")]
+    pub rate_limit_pps: u64,
+
+    #[serde(default = "default_rate_limit_burst")]
+    pub rate_limit_burst: u64,
+}
+
+fn default_true() -> bool { true }
+fn default_skew_soft_seconds() -> i64 { 15 }
+fn default_skew_hard_seconds() -> i64 { 30 }
+fn default_replay_window_seconds() -> usize { 30 }
+fn default_replay_cache_size() -> usize { 4096 }
+fn default_rate_limit_pps() -> u64 { 200 }
+fn default_rate_limit_burst() -> u64 { 500 }
+
+impl ObfuscationConfig {
+    pub fn to_obf_config(&self) -> ObfConfig {
+        ObfConfig {
+            jc: self.jc,
+            jmin: self.jmin,
+            jmax: self.jmax,
+            s1: self.s1,
+            s2: self.s2,
+            s3: self.s3,
+            s4: self.s4,
+            h1: self.h1.clone(),
+            h2: self.h2.clone(),
+            h3: self.h3.clone(),
+            h4: self.h4.clone(),
+            i1: self.i1.clone(),
+            i2: self.i2.clone(),
+            i3: self.i3.clone(),
+            i4: self.i4.clone(),
+            i5: self.i5.clone(),
+        }
+    }
+}
+
+impl Profile {
+    /// Load profile from a JSON file
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+        let content = fs::read_to_string(path)?;
+        let profile: Profile = serde_json::from_str(&content)?;
+        Ok(profile)
+    }
+
+    /// Save profile to a JSON file
+    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+        let content = serde_json::to_string_pretty(self)?;
+        fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Get the obfuscation config
+    pub fn obf_config(&self) -> ObfConfig {
+        self.obfuscation.to_obf_config()
+    }
+}
+
+// Serde duration modules - handles string formats like "5s", "20s", "2m"
+pub mod serde_duration {
+    use serde::{Deserializer, Serializer, Serialize, de::Visitor};
+    use std::time::Duration;
+    use std::fmt;
+
+    // Module for optional Duration
+    pub mod opt {
+        use super::*;
+
+        pub fn serialize<S>(opt: &Option<Duration>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            match opt {
+                Some(d) => serializer.serialize_some(&duration_to_string(d)),
+                None => serializer.serialize_none(),
+            }
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Duration>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_option(OptVisitor)
+        }
+    }
+
+    // Module for required Duration
+    pub mod default {
+        use super::*;
+
+        pub fn serialize<S>(value: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            serializer.serialize_str(&duration_to_string(value))
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            deserializer.deserialize_any(DurationVisitor)
+        }
+    }
+
+    // Module for optional u64 milliseconds
+    pub mod opt_u64_millis {
+        use super::*;
+        use serde::Deserialize;
+
+        pub fn serialize<S>(opt: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            opt.serialize(serializer)
+        }
+
+        pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            Option::deserialize(deserializer)
+        }
+    }
+
+    struct OptVisitor;
+
+    impl<'de> Visitor<'de> for OptVisitor {
+        type Value = Option<Duration>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a duration string (e.g., \"5s\", \"2m\") or null")
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E> { Ok(None) }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            Ok(Some(deserializer.deserialize_any(DurationVisitor)?))
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Some(parse_duration_str(value).ok_or_else(|| {
+                E::custom(format!("invalid duration string: {}", value))
+            })?))
+        }
+    }
+
+    struct DurationVisitor;
+
+    impl<'de> Visitor<'de> for DurationVisitor {
+        type Value = Duration;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a duration string (e.g., \"5s\", \"2m\") or number of seconds")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            parse_duration_str(value).ok_or_else(|| {
+                E::custom(format!("invalid duration string: {}", value))
+            })
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(Duration::from_secs(value))
+        }
+    }
+
+    fn duration_to_string(d: &Duration) -> String {
+        let secs = d.as_secs();
+        if secs >= 60 {
+            format!("{}m", secs / 60)
+        } else {
+            format!("{}s", secs)
+        }
+    }
+
+    fn parse_duration_str(s: &str) -> Option<Duration> {
+        let s = s.trim();
+        if s.ends_with('s') {
+            let num = s[..s.len()-1].parse::<u64>().ok()?;
+            Some(Duration::from_secs(num))
+        } else if s.ends_with('m') {
+            let num = s[..s.len()-1].parse::<u64>().ok()?;
+            Some(Duration::from_secs(num * 60))
+        } else if s.ends_with('h') {
+            let num = s[..s.len()-1].parse::<u64>().ok()?;
+            Some(Duration::from_secs(num * 3600))
+        } else if s.ends_with("ms") {
+            let num = s[..s.len()-2].parse::<u64>().ok()?;
+            Some(Duration::from_millis(num))
+        } else {
+            // Try as plain seconds
+            let num = s.parse::<u64>().ok()?;
+            Some(Duration::from_secs(num))
+        }
+    }
+}
+
+// Serde bool module for optional bool
+pub mod serde_bool {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(opt: &Option<bool>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match opt {
+            Some(b) => serializer.serialize_some(b),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::deserialize(deserializer)
+    }
+}

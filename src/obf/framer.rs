@@ -113,7 +113,10 @@ impl Framer {
             }
         }
 
-        if candidates.len() != 1 {
+        if candidates.is_empty() {
+            return Err(FramerError::MissingHeader(-1));
+        }
+        if candidates.len() > 1 {
             return Err(FramerError::AmbiguousType);
         }
         let msg_type = candidates[0];

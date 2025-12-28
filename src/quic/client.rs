@@ -27,10 +27,18 @@ pub async fn connect(
     socket: std::net::UdpSocket,
     server_addr: SocketAddr,
     framer: Framer,
-    config: ClientConfig,
+    mut config: ClientConfig,
     initiation_payload: &[u8],
     server_name: &str,
-) -> Result<quinn::Connection, QuicError> {
+) -> Result<(Endpoint, quinn::Connection), QuicError> {
+    config
+        .transport_config(std::sync::Arc::new({
+            let mut transport_config = quinn::TransportConfig::default();
+            transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
+            transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
+            transport_config
+        }));
+
     let mut handshake_conn = UdpPacketConn::new(
         socket
             .try_clone()
@@ -53,9 +61,17 @@ pub async fn connect_after_handshake(
     socket: std::net::UdpSocket,
     server_addr: SocketAddr,
     framer: Framer,
-    config: ClientConfig,
+    mut config: ClientConfig,
     server_name: &str,
-) -> Result<quinn::Connection, QuicError> {
+) -> Result<(Endpoint, quinn::Connection), QuicError> {
+    config
+        .transport_config(std::sync::Arc::new({
+            let mut transport_config = quinn::TransportConfig::default();
+            transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
+            transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
+            transport_config
+        }));
+
     let runtime = default_runtime().ok_or_else(|| QuicError::Setup("no async runtime".into()))?;
     let framed =
         FramedUdpSocket::new(socket, framer).map_err(|e| QuicError::Setup(e.to_string()))?;
@@ -66,11 +82,13 @@ pub async fn connect_after_handshake(
         runtime.clone(),
     )
     .map_err(|e| QuicError::Setup(e.to_string()))?;
-    endpoint
+    let conn = endpoint
         .connect_with(config, server_addr, server_name)
         .map_err(|e| QuicError::Setup(e.to_string()))?
         .await
-        .map_err(|e| QuicError::Setup(e.to_string()))
+        .map_err(|e| QuicError::Setup(e.to_string()))?;
+
+    Ok((endpoint, conn))
 }
 
 pub(crate) struct FramedUdpSocket {
@@ -136,12 +154,32 @@ impl AsyncUdpSocket for FramedUdpSocket {
                     return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e.to_string())))
                 }
             };
-            ready!(self.io.poll_send_ready(cx))?;
+
+            match self.io.poll_send_ready(cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => {
+                    if sent > 0 {
+                        return Poll::Ready(Ok(sent));
+                    } else {
+                        return Poll::Pending;
+                    }
+                }
+            }
+
             match self.io.try_io(Interest::WRITABLE, || {
                 self.io.try_send_to(&datagram, transmit.destination)
             }) {
-                Ok(_) => sent += 1,
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,
+                Ok(_) => {
+                    sent += 1;
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    if sent > 0 {
+                        return Poll::Ready(Ok(sent));
+                    } else {
+                        return Poll::Pending;
+                    }
+                }
                 Err(e) => return Poll::Ready(Err(e)),
             }
         }
@@ -154,7 +192,7 @@ impl AsyncUdpSocket for FramedUdpSocket {
         bufs: &mut [std::io::IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>> {
-        let mut backing = vec![0u8; 65536];
+        let mut backing = vec![0u8; 65536]; // Allocate enough for loopback/jumbo frames
         loop {
             ready!(self.io.poll_recv_ready(cx))?;
             match self

@@ -116,7 +116,7 @@ impl<C: RelayConnector> Socks5Server<C> {
 
     pub async fn serve_stream<S>(&self, mut stream: S) -> Result<(), SocksError>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let method = self.negotiate_method(&mut stream).await?;
         if method == METHOD_USERPASS {
@@ -124,12 +124,42 @@ impl<C: RelayConnector> Socks5Server<C> {
         }
 
         let target = self.read_request(&mut stream).await?;
-        let mut remote = self.connector.connect(&target).await?;
+        let remote = self.connector.connect(&target).await?;
         self.write_reply(&mut stream, REP_SUCCEEDED).await?;
 
-        tokio::io::copy_bidirectional(&mut stream, &mut remote)
-            .await
-            .map_err(SocksError::Io)?;
+        let (mut stream_read, mut stream_write) = tokio::io::split(stream);
+        let (mut remote_read, mut remote_write) = tokio::io::split(remote);
+
+        let client_to_remote = async {
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream_read.read(&mut buf).await?;
+                if n == 0 { break; }
+                remote_write.write_all(&buf[..n]).await?;
+                remote_write.flush().await?;
+            }
+            remote_write.shutdown().await?;
+            Ok::<(), std::io::Error>(())
+        };
+
+        let remote_to_client = async {
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = remote_read.read(&mut buf).await?;
+                if n == 0 { break; }
+                stream_write.write_all(&buf[..n]).await?;
+                stream_write.flush().await?;
+            }
+            stream_write.shutdown().await?;
+            Ok::<(), std::io::Error>(())
+        };
+
+        // Use select so that if either side closes the other side's delay doesn't block the task
+        let relay_result = tokio::select! {
+            res = client_to_remote => res,
+            res = remote_to_client => res,
+        };
+        relay_result.map_err(SocksError::Io)?;
         Ok(())
     }
 

@@ -1,0 +1,13 @@
+{
+  "listen_addr": "127.0.0.1:1080",
+  "username": "",
+  "password": "",
+  "workers": 100,
+  "max_connections": 1024,
+  "dial_timeout": "5s",
+  "accept_timeout": "500ms",
+  "idle_timeout": "10s",
+  "metrics_interval": "10s",
+  "log_level": "info",
+  "verbose": false
+}
