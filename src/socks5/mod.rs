@@ -133,10 +133,14 @@ impl<C: RelayConnector> Socks5Server<C> {
         let client_to_remote = async {
             let mut buf = [0u8; 4096];
             loop {
-                let n = stream_read.read(&mut buf).await?;
-                if n == 0 { break; }
-                remote_write.write_all(&buf[..n]).await?;
-                remote_write.flush().await?;
+                match stream_read.read(&mut buf).await {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        let _start = std::time::Instant::now();
+                        remote_write.write_all(&buf[..n]).await?;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             remote_write.shutdown().await?;
             Ok::<(), std::io::Error>(())
@@ -145,10 +149,14 @@ impl<C: RelayConnector> Socks5Server<C> {
         let remote_to_client = async {
             let mut buf = [0u8; 4096];
             loop {
-                let n = remote_read.read(&mut buf).await?;
-                if n == 0 { break; }
-                stream_write.write_all(&buf[..n]).await?;
-                stream_write.flush().await?;
+                match remote_read.read(&mut buf).await {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        let _start = std::time::Instant::now();
+                        stream_write.write_all(&buf[..n]).await?;
+                    }
+                    Err(e) => return Err(e),
+                }
             }
             stream_write.shutdown().await?;
             Ok::<(), std::io::Error>(())
