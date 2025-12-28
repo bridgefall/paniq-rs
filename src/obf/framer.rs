@@ -88,12 +88,26 @@ impl Framer {
         if datagram.len() < 4 {
             return Err(FramerError::FrameTooShort);
         }
-        let mut candidates = Vec::new();
+
+        // Fast path for Transport - it's the most common type
+        let transport_padding = self.padding_for(MessageType::Transport);
+        if transport_padding >= 0 {
+            let pad_len = transport_padding as usize;
+            if datagram.len() >= pad_len + 4 {
+                let type_val = u32::from_le_bytes(datagram[pad_len..pad_len + 4].try_into().unwrap());
+                if let Some(h) = self.header_for(MessageType::Transport) {
+                    if h.validate(type_val) {
+                        return Ok((MessageType::Transport, datagram[pad_len + 4..].to_vec()));
+                    }
+                }
+            }
+        }
+
+        // Fallback for others
         for msg_type in [
             MessageType::Initiation,
             MessageType::Response,
             MessageType::CookieReply,
-            MessageType::Transport,
         ] {
             let padding = self.padding_for(msg_type);
             if padding < 0 {
@@ -109,20 +123,11 @@ impl Framer {
             }
             let type_val = u32::from_le_bytes(datagram[pad_len..pad_len + 4].try_into().unwrap());
             if header.validate(type_val) {
-                candidates.push(msg_type);
+                return Ok((msg_type, datagram[pad_len + 4..].to_vec()));
             }
         }
 
-        if candidates.is_empty() {
-            return Err(FramerError::MissingHeader(-1));
-        }
-        if candidates.len() > 1 {
-            return Err(FramerError::AmbiguousType);
-        }
-        let msg_type = candidates[0];
-        let padding = self.padding_for(msg_type) as usize;
-        let payload = datagram[padding + 4..].to_vec();
-        Ok((msg_type, payload))
+        Err(FramerError::MissingHeader(-1))
     }
 
     pub fn junk_datagrams(&self) -> Result<Vec<Vec<u8>>, FramerError> {

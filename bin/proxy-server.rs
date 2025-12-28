@@ -204,7 +204,6 @@ async fn handle_stream(
                 Some(0) | None => break,
                 Some(n) => {
                     target_write.write_all(&buf[..n]).await?;
-                    target_write.flush().await?;
                 }
             }
         }
@@ -219,7 +218,6 @@ async fn handle_stream(
             let n = target_read.read(&mut buf).await?;
             if n == 0 { break; }
             send.write_all(&buf[..n]).await?;
-            send.flush().await?;
         }
         send.finish().await?;
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
@@ -293,6 +291,7 @@ fn build_server_config() -> Result<quinn::ServerConfig, Box<dyn std::error::Erro
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
+    transport.initial_rtt(std::time::Duration::from_millis(10));
     server_config.transport_config(Arc::new(transport));
     Ok(server_config)
 }

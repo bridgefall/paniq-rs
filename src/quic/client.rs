@@ -36,6 +36,7 @@ pub async fn connect(
             let mut transport_config = quinn::TransportConfig::default();
             transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
             transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
+            transport_config.initial_rtt(std::time::Duration::from_millis(10));
             transport_config
         }));
 
@@ -69,6 +70,7 @@ pub async fn connect_after_handshake(
             let mut transport_config = quinn::TransportConfig::default();
             transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
             transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
+            transport_config.initial_rtt(std::time::Duration::from_millis(10));
             transport_config
         }));
 
@@ -192,27 +194,32 @@ impl AsyncUdpSocket for FramedUdpSocket {
         bufs: &mut [std::io::IoSliceMut<'_>],
         meta: &mut [RecvMeta],
     ) -> Poll<io::Result<usize>> {
-        let mut backing = vec![0u8; 65536]; // Allocate enough for loopback/jumbo frames
         loop {
             ready!(self.io.poll_recv_ready(cx))?;
+            let mut backing = [0u8; 4096]; // Use stack-allocated buffer for common MTU
             match self
                 .io
                 .try_io(Interest::READABLE, || self.io.try_recv_from(&mut backing))
             {
                 Ok((len, addr)) => {
-                    if let Ok((msg, payload)) = self.framer.decode_frame(&backing[..len]) {
-                        if msg != MessageType::Transport {
-                            continue;
+                    match self.framer.decode_frame(&backing[..len]) {
+                        Ok((msg, payload)) => {
+                            if msg != MessageType::Transport {
+                                continue;
+                            }
+                            let written = self.copy_payload(&payload, bufs)?;
+                            meta[0] = RecvMeta {
+                                addr,
+                                len: written,
+                                stride: written,
+                                ecn: None,
+                                dst_ip: None,
+                            };
+                            return Poll::Ready(Ok(1));
                         }
-                        let written = self.copy_payload(&payload, bufs)?;
-                        meta[0] = RecvMeta {
-                            addr,
-                            len: written,
-                            stride: written,
-                            ecn: None,
-                            dst_ip: None,
-                        };
-                        return Poll::Ready(Ok(1));
+                        Err(e) => {
+                            eprintln!("poll_recv: Decode error from {}: {}", addr, e);
+                        }
                     }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,

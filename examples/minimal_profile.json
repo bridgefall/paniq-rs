@@ -1,0 +1,28 @@
+{
+  "name": "minimal",
+  "proxy_addr": "127.0.0.1:9000",
+  "handshake_timeout": "5s",
+  "handshake_attempts": 3,
+  "obfuscation": {
+    "jc": 0,
+    "jmin": 0,
+    "jmax": 0,
+    "s1": 0,
+    "s2": 0,
+    "s3": 0,
+    "s4": 0,
+    "h1": "100-100",
+    "h3": "300-300",
+    "h4": "400-400",
+    "i1": "<d>",
+    "i2": "",
+    "i3": "",
+    "i4": "",
+    "i5": "",
+    "server_public_key": "",
+    "server_private_key": "",
+    "signature_validate": false,
+    "encrypted_timestamp": false,
+    "require_encrypted_timestamp": false
+  }
+}

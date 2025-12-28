@@ -37,6 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect to proxy server
     let std_sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
+
     let proxy_addr = profile.proxy_addr.parse()?;
     log(&format!("Connecting to proxy at {}", proxy_addr));
     let (endpoint, quinn_conn) = connect_after_handshake(
@@ -151,10 +152,11 @@ fn build_test_client_config() -> Result<quinn::ClientConfig, Box<dyn std::error:
         .with_no_client_auth();
 
     let mut client_config = quinn::ClientConfig::new(Arc::new(client_crypto));
-    let mut transport_config = quinn::TransportConfig::default();
-    transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
-    transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
-    client_config.transport_config(Arc::new(transport_config));
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
+    transport.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
+    transport.initial_rtt(std::time::Duration::from_millis(10));
+    client_config.transport_config(Arc::new(transport));
     Ok(client_config)
 }
 
@@ -174,7 +176,10 @@ fn build_client_config_from_profile(_profile: &Profile) -> Result<quinn::ClientC
     let mut client_config = quinn::ClientConfig::new(Arc::new(client_crypto));
     let mut transport_config = quinn::TransportConfig::default();
     transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
-    transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(1))); // Aggressive keep-alive
+    transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
+    transport_config.initial_rtt(std::time::Duration::from_millis(10));
+    // Fast startup options
+
     client_config.transport_config(Arc::new(transport_config));
 
     Ok(client_config)
