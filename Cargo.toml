@@ -21,6 +21,7 @@ rustls = { version = "0.21", optional = true }
 tracing = { version = "0.1", optional = true }
 async-trait = { version = "0.1", optional = true }
 rcgen = { version = "0.12", optional = true }
+fast-socks5 = "0.10.0"
 
 [features]
 default = []

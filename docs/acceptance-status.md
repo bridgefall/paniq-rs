@@ -37,11 +37,12 @@ This file tracks the implementation state of paniq-rs against the phases outline
 - **End-to-End Test**: `tests/quic_roundtrip.rs` tests full QUIC round-trip with obfuscation
 
 ### Phase 4: SOCKS5 Daemon ✅ COMPLETE
-- **SOCKS5 Server**: `src/socks5/mod.rs` implements RFC 1928/1929
+- **SOCKS5 Server**: `src/socks5/mod.rs` now layers our relay logic on top of the `fast-socks5`
+  handshake/parser
   - SOCKS5 protocol negotiation
   - Username/password authentication (RFC 1929)
-  - CONNECT command only
-  - IPv4, IPv6, and domain name addresses
+  - CONNECT command only (UDP/BIND disabled)
+  - IPv4, IPv6, and domain name addresses (reply mirrors requested ATYP)
 - **Relay Connector**: Pluggable `RelayConnector` trait for deterministic testing
 - **Tests**: Comprehensive unit tests in `src/socks5/mod.rs` cover auth flows and relay
 
@@ -62,10 +63,14 @@ This file tracks the implementation state of paniq-rs against the phases outline
   - Packet-loss simulation tests
   - End-to-end integration tests with real network conditions
 
-### Phase 6: Tooling and Examples ⚠️ PARTIAL
+### Phase 6: Tooling and Examples ✅ COMPLETE (initial tools)
 - **Vector Dump Tool**: `examples/dump_vectors.rs` generates JSON test vectors
-- **Missing**:
-  - CLI tools (`socks5d`, `proxy-server` as described in the plan)
+- **CLI Tools**:
+  - `bin/socks5d.rs` and `bin/proxy-server.rs` provide runnable daemons backed by QUIC +
+    obfuscation
+  - Integration flow validated in `tests/integration_socks5_quic.rs` with an end-to-end latency
+    assertion under 200ms
+- **Remaining nice-to-haves**:
   - Configuration file loading/saving
   - Profile generation utilities
 

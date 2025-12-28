@@ -1,29 +1,27 @@
 #![cfg(feature = "socks5")]
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use fast_socks5::consts::{
+    SOCKS5_ADDR_TYPE_IPV4, SOCKS5_REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
+    SOCKS5_REPLY_COMMAND_NOT_SUPPORTED, SOCKS5_REPLY_SUCCEEDED, SOCKS5_VERSION,
+};
+use fast_socks5::server::{
+    AcceptAuthentication, Authentication, Config as FastConfig, Socks5Socket,
+};
+use fast_socks5::util::target_addr as fast_target;
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use thiserror::Error;
 
-const SOCKS_VER: u8 = 0x05;
-const METHOD_NO_AUTH: u8 = 0x00;
-const METHOD_USERPASS: u8 = 0x02;
-const METHOD_NO_ACCEPT: u8 = 0xFF;
-
-const CMD_CONNECT: u8 = 0x01;
-
-const ATYP_IPV4: u8 = 0x01;
-const ATYP_DOMAIN: u8 = 0x03;
-const ATYP_IPV6: u8 = 0x04;
-
-const REP_SUCCEEDED: u8 = 0x00;
-const REP_CMD_NOT_SUPPORTED: u8 = 0x07;
-const REP_ADDR_NOT_SUPPORTED: u8 = 0x08;
+#[allow(dead_code)]
+const REP_CMD_NOT_SUPPORTED: u8 = SOCKS5_REPLY_COMMAND_NOT_SUPPORTED;
+#[allow(dead_code)]
+const REP_ADDR_NOT_SUPPORTED: u8 = SOCKS5_REPLY_ADDRESS_TYPE_NOT_SUPPORTED;
 
 pub trait IoStream: AsyncRead + AsyncWrite + Unpin {}
 
@@ -47,6 +45,8 @@ pub enum SocksError {
     UnsupportedAddress(u8),
     #[error("connector error: {0}")]
     Connector(String),
+    #[error("socks5 protocol error: {0}")]
+    Protocol(String),
 }
 
 #[derive(Clone, Default)]
@@ -57,13 +57,6 @@ pub struct AuthConfig {
 impl AuthConfig {
     pub fn requires_auth(&self) -> bool {
         !self.users.is_empty()
-    }
-
-    fn validate(&self, user: &str, pass: &str) -> bool {
-        match self.users.get(user) {
-            Some(expected) => expected == pass,
-            None => false,
-        }
     }
 }
 
@@ -114,208 +107,178 @@ impl<C: RelayConnector> Socks5Server<C> {
         }
     }
 
-    pub async fn serve_stream<S>(&self, mut stream: S) -> Result<(), SocksError>
+    pub async fn serve_stream<S>(&self, stream: S) -> Result<(), SocksError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let method = self.negotiate_method(&mut stream).await?;
-        if method == METHOD_USERPASS {
-            self.handle_userpass(&mut stream).await?;
-        }
-
-        let target = self.read_request(&mut stream).await?;
-        let remote = self.connector.connect(&target).await?;
-        self.write_reply(&mut stream, REP_SUCCEEDED).await?;
-
-        let (mut stream_read, mut stream_write) = tokio::io::split(stream);
-        let (mut remote_read, mut remote_write) = tokio::io::split(remote);
-
-        let client_to_remote = async {
-            let mut buf = [0u8; 4096];
-            loop {
-                match stream_read.read(&mut buf).await {
-                    Ok(0) => break, // EOF
-                    Ok(n) => {
-                        let _start = std::time::Instant::now();
-                        remote_write.write_all(&buf[..n]).await?;
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            remote_write.shutdown().await?;
-            Ok::<(), std::io::Error>(())
-        };
-
-        let remote_to_client = async {
-            let mut buf = [0u8; 4096];
-            loop {
-                match remote_read.read(&mut buf).await {
-                    Ok(0) => break, // EOF
-                    Ok(n) => {
-                        let _start = std::time::Instant::now();
-                        stream_write.write_all(&buf[..n]).await?;
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
-            stream_write.shutdown().await?;
-            Ok::<(), std::io::Error>(())
-        };
-
-        // Use select so that if either side closes the other side's delay doesn't block the task
-        let relay_result = tokio::select! {
-            res = client_to_remote => res,
-            res = remote_to_client => res,
-        };
-        relay_result.map_err(SocksError::Io)?;
-        Ok(())
-    }
-
-    async fn negotiate_method<S>(&self, stream: &mut S) -> Result<u8, SocksError>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
-    {
-        let mut header = [0u8; 2];
-        stream.read_exact(&mut header).await?;
-        if header[0] != SOCKS_VER {
-            return Err(SocksError::InvalidVersion(header[0]));
-        }
-        let nmethods = header[1] as usize;
-        let mut methods = vec![0u8; nmethods];
-        stream.read_exact(&mut methods).await?;
-
-        let requires_auth = self.auth.requires_auth();
-        let mut chosen = METHOD_NO_ACCEPT;
-        if requires_auth {
-            if methods.contains(&METHOD_USERPASS) {
-                chosen = METHOD_USERPASS;
-            }
-        } else if methods.contains(&METHOD_NO_AUTH) {
-            chosen = METHOD_NO_AUTH;
-        }
-
-        stream.write_all(&[SOCKS_VER, chosen]).await?;
-        stream.flush().await?;
-        if chosen == METHOD_NO_ACCEPT {
-            return Err(SocksError::NoAcceptableMethod);
-        }
-        Ok(chosen)
-    }
-
-    async fn handle_userpass<S>(&self, stream: &mut S) -> Result<(), SocksError>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
-    {
-        let mut header = [0u8; 2];
-        stream.read_exact(&mut header).await?;
-        if header[0] != 0x01 {
-            stream.write_all(&[0x01, 0x01]).await?; // auth failure
-            stream.flush().await?;
-            return Err(SocksError::AuthFailed);
-        }
-        let ulen = header[1] as usize;
-        let mut uname = vec![0u8; ulen];
-        stream.read_exact(&mut uname).await?;
-        let mut plen = [0u8; 1];
-        stream.read_exact(&mut plen).await?;
-        let mut pass = vec![0u8; plen[0] as usize];
-        stream.read_exact(&mut pass).await?;
-
-        if self
-            .auth
-            .validate(&String::from_utf8_lossy(&uname), &String::from_utf8_lossy(&pass))
-        {
-            stream.write_all(&[0x01, 0x00]).await?;
-            stream.flush().await?;
-            Ok(())
+        if self.auth.requires_auth() {
+            let config = build_auth_config(&self.auth)?;
+            self.serve_with_config(stream, config).await
         } else {
-            stream.write_all(&[0x01, 0x01]).await?;
-            stream.flush().await?;
-            Err(SocksError::AuthFailed)
+            let config = build_noauth_config();
+            self.serve_with_config(stream, config).await
         }
     }
 
-    async fn read_request<S>(&self, stream: &mut S) -> Result<TargetAddr, SocksError>
+    async fn serve_with_config<S, A>(
+        &self,
+        stream: S,
+        config: FastConfig<A>,
+    ) -> Result<(), SocksError>
     where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        A: Authentication + Send + Sync + 'static,
+        A::Item: Send,
     {
-        let mut header = [0u8; 4];
-        stream.read_exact(&mut header).await?;
-        if header[0] != SOCKS_VER {
-            return Err(SocksError::InvalidVersion(header[0]));
-        }
-        if header[1] != CMD_CONNECT {
-            self.write_reply(stream, REP_CMD_NOT_SUPPORTED).await?;
-            return Err(SocksError::UnsupportedCommand(header[1]));
-        }
+        let socket = Socks5Socket::new(stream, Arc::new(config));
 
-        let target = match header[3] {
-            ATYP_IPV4 => {
-                let mut addr = [0u8; 4];
-                stream.read_exact(&mut addr).await?;
-                let mut port = [0u8; 2];
-                stream.read_exact(&mut port).await?;
-                TargetAddr::Ip(SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::from(addr)),
-                    u16::from_be_bytes(port),
-                ))
+        let mut socket = socket
+            .upgrade_to_socks5()
+            .await
+            .map_err(|e| SocksError::Protocol(e.to_string()))?;
+
+        let target = map_target(socket.target_addr().cloned())?;
+        let remote = self.connector.connect(&target).await?;
+
+        send_success_reply(&mut socket, &target).await?;
+
+        relay_bidirectional(socket, remote).await
+    }
+}
+
+#[derive(Clone)]
+struct MapAuth {
+    users: HashMap<String, String>,
+}
+
+#[async_trait]
+impl Authentication for MapAuth {
+    type Item = ();
+
+    async fn authenticate(&self, credentials: Option<(String, String)>) -> Option<Self::Item> {
+        let (user, pass) = credentials?;
+        self.users
+            .get(&user)
+            .filter(|expected| *expected == &pass)
+            .map(|_| ())
+    }
+}
+
+fn build_auth_config(auth: &AuthConfig) -> Result<FastConfig<MapAuth>, SocksError> {
+    let mut config = FastConfig::<MapAuth>::default();
+    config.set_execute_command(false);
+    config.set_dns_resolve(false);
+    config.set_allow_no_auth(false);
+
+    Ok(config.with_authentication(MapAuth {
+        users: auth.users.clone(),
+    }))
+}
+
+fn build_noauth_config() -> FastConfig<AcceptAuthentication> {
+    let mut config = FastConfig::<AcceptAuthentication>::default();
+    config.set_execute_command(false);
+    config.set_dns_resolve(false);
+    config.set_allow_no_auth(true);
+    config
+}
+
+fn map_target(addr: Option<fast_target::TargetAddr>) -> Result<TargetAddr, SocksError> {
+    match addr {
+        Some(fast_target::TargetAddr::Ip(ip)) => Ok(TargetAddr::Ip(ip)),
+        Some(fast_target::TargetAddr::Domain(domain, port)) => Ok(TargetAddr::Domain(domain, port)),
+        None => Err(SocksError::Protocol("missing target address".into())),
+    }
+}
+
+async fn send_success_reply<S>(stream: &mut S, target: &TargetAddr) -> Result<(), SocksError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let mut resp = Vec::with_capacity(22);
+    resp.push(SOCKS5_VERSION);
+    resp.push(SOCKS5_REPLY_SUCCEEDED);
+    resp.push(0x00); // reserved
+
+    match target {
+        TargetAddr::Ip(addr) => match addr.ip() {
+            std::net::IpAddr::V4(_) => {
+                resp.push(SOCKS5_ADDR_TYPE_IPV4);
+                resp.extend_from_slice(&[0, 0, 0, 0]);
             }
-            ATYP_DOMAIN => {
-                let mut len = [0u8; 1];
-                stream.read_exact(&mut len).await?;
-                let mut host = vec![0u8; len[0] as usize];
-                stream.read_exact(&mut host).await?;
-                let mut port = [0u8; 2];
-                stream.read_exact(&mut port).await?;
-                TargetAddr::Domain(
-                    String::from_utf8_lossy(&host).into_owned(),
-                    u16::from_be_bytes(port),
-                )
+            std::net::IpAddr::V6(_) => {
+                resp.push(fast_socks5::consts::SOCKS5_ADDR_TYPE_IPV6);
+                resp.extend_from_slice(&[0u8; 16]);
             }
-            ATYP_IPV6 => {
-                let mut addr = [0u8; 16];
-                stream.read_exact(&mut addr).await?;
-                let mut port = [0u8; 2];
-                stream.read_exact(&mut port).await?;
-                TargetAddr::Ip(SocketAddr::new(
-                    IpAddr::V6(Ipv6Addr::from(addr)),
-                    u16::from_be_bytes(port),
-                ))
-            }
-            atyp => {
-                self.write_reply(stream, REP_ADDR_NOT_SUPPORTED).await?;
-                return Err(SocksError::UnsupportedAddress(atyp));
-            }
-        };
-        Ok(target)
+        },
+        TargetAddr::Domain(_, _) => {
+            resp.push(fast_socks5::consts::SOCKS5_ADDR_TYPE_DOMAIN_NAME);
+            resp.push(0); // zero-length placeholder
+        }
     }
 
-    async fn write_reply<S>(&self, stream: &mut S, rep: u8) -> Result<(), SocksError>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
-    {
-        let resp = [
-            SOCKS_VER,
-            rep,
-            0x00,
-            ATYP_IPV4,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-        ];
-        stream.write_all(&resp).await?;
-        stream.flush().await?;
-        Ok(())
-    }
+    resp.extend_from_slice(&0u16.to_be_bytes());
+
+    stream.write_all(&resp).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+async fn relay_bidirectional<C, R>(client: C, remote: R) -> Result<(), SocksError>
+where
+    C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut client_read, mut client_write) = tokio::io::split(client);
+    let (mut remote_read, mut remote_write) = tokio::io::split(remote);
+
+    let client_to_remote = async {
+        let mut buf = [0u8; 4096];
+        loop {
+            match client_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => remote_write.write_all(&buf[..n]).await?,
+                Err(e) => return Err(e),
+            }
+        }
+        remote_write.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
+
+    let remote_to_client = async {
+        let mut buf = [0u8; 4096];
+        loop {
+            match remote_read.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => client_write.write_all(&buf[..n]).await?,
+                Err(e) => return Err(e),
+            }
+        }
+        client_write.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
+
+    let relay_result = tokio::select! {
+        res = client_to_remote => res,
+        res = remote_to_client => res,
+    };
+
+    relay_result.map_err(SocksError::Io)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+
+    const SOCKS_VER: u8 = SOCKS5_VERSION;
+    const METHOD_NO_AUTH: u8 = fast_socks5::consts::SOCKS5_AUTH_METHOD_NONE;
+    const METHOD_USERPASS: u8 = fast_socks5::consts::SOCKS5_AUTH_METHOD_PASSWORD;
+    const METHOD_NO_ACCEPT: u8 = fast_socks5::consts::SOCKS5_AUTH_METHOD_NOT_ACCEPTABLE;
+    const CMD_CONNECT: u8 = fast_socks5::consts::SOCKS5_CMD_TCP_CONNECT;
+    const ATYP_IPV4: u8 = SOCKS5_ADDR_TYPE_IPV4;
+    const REP_SUCCEEDED: u8 = SOCKS5_REPLY_SUCCEEDED;
 
     #[derive(Clone)]
     struct TestConnector {
@@ -334,7 +297,9 @@ mod tests {
     impl RelayConnector for TestConnector {
         async fn connect(&self, _target: &TargetAddr) -> Result<BoxedStream, SocksError> {
             let mut guard = self.streams.lock().await;
-            guard.pop().ok_or_else(|| SocksError::Connector("no stream".into()))
+            guard
+                .pop()
+                .ok_or_else(|| SocksError::Connector("no stream".into()))
         }
     }
 
@@ -357,7 +322,10 @@ mod tests {
 
         let server_task = tokio::spawn(async move { server.serve_stream(server_side).await });
 
-        client.write_all(&[SOCKS_VER, 1, METHOD_NO_AUTH]).await.unwrap();
+        client
+            .write_all(&[SOCKS_VER, 1, METHOD_NO_AUTH])
+            .await
+            .unwrap();
         let mut method_resp = [0u8; 2];
         client.read_exact(&mut method_resp).await.unwrap();
         assert_eq!(method_resp, [SOCKS_VER, METHOD_NO_AUTH]);
@@ -415,20 +383,7 @@ mod tests {
         assert_eq!(method_resp, [SOCKS_VER, METHOD_USERPASS]);
 
         let auth = [
-            0x01,
-            5,
-            b'a',
-            b'l',
-            b'i',
-            b'c',
-            b'e',
-            6,
-            b's',
-            b'e',
-            b'c',
-            b'r',
-            b'e',
-            b't',
+            0x01, 5, b'a', b'l', b'i', b'c', b'e', 6, b's', b'e', b'c', b'r', b'e', b't',
         ];
         client.write_all(&auth).await.unwrap();
         let mut auth_resp = [0u8; 2];
@@ -457,12 +412,14 @@ mod tests {
     #[tokio::test]
     async fn socks5_rejects_bad_method() {
         let connector = TestConnector::new(Vec::new());
-        let server = Socks5Server::new(connector, AuthConfig::default());
+        let mut users = HashMap::new();
+        users.insert("bob".to_string(), "hunter2".to_string());
+        let server = Socks5Server::new(connector, AuthConfig { users });
         let (mut client, server_side) = duplex(64);
 
         let server_task = tokio::spawn(async move { server.serve_stream(server_side).await });
         client
-            .write_all(&[SOCKS_VER, 1, METHOD_USERPASS])
+            .write_all(&[SOCKS_VER, 1, METHOD_NO_AUTH])
             .await
             .unwrap();
         let mut resp = [0u8; 2];
