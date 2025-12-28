@@ -11,7 +11,8 @@ use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
 use paniq::obf::Framer;
-use paniq::profile::{Profile, QuicConfig as ProfileQuicConfig};
+use paniq::profile::Profile;
+use paniq::quic::common::configure_transport;
 use paniq::quic::server::listen_on_socket;
 
 mod shared_cert;
@@ -56,22 +57,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     log(&format!("Listening on {}", args.listen_addr));
 
     // Accept incoming QUIC connections
-    while let Some(incoming) = endpoint.accept().await {
-        let conn = match incoming.await {
-            Ok(c) => c,
-            Err(e) => {
-                log(&format!("Accept error: {}", e));
-                continue;
-            }
-        };
+    // Accept incoming QUIC connections
+    loop {
+        tokio::select! {
+            accept_res = endpoint.accept() => {
+               if let Some(incoming) = accept_res {
+                    let conn = match incoming.await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log(&format!("Accept error: {}", e));
+                            continue;
+                        }
+                    };
 
-        log(&format!("New connection from {}", conn.remote_address()));
+                    log(&format!("New connection from {}", conn.remote_address()));
 
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(conn).await {
-                log(&format!("Connection error: {}", e));
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_connection(conn).await {
+                            log(&format!("Connection error: {}", e));
+                        }
+                    });
+               } else {
+                   break;
+               }
             }
-        });
+             _ = tokio::signal::ctrl_c() => {
+                log("Shutting down gracefully...");
+                endpoint.close(0u8.into(), b"shutting down");
+                break;
+            }
+        }
     }
 
     Ok(())
@@ -83,9 +98,15 @@ async fn handle_connection(conn: quinn::Connection) -> Result<(), Box<dyn std::e
         conn.remote_address()
     ));
     // Handle bidirectional streams from the client
+    let mut stream_count = 0;
     loop {
+        log(&format!(
+            "handle_connection: Waiting for stream (count: {})",
+            stream_count
+        ));
         match conn.accept_bi().await {
             Ok((send, recv)) => {
+                stream_count += 1;
                 log("handle_connection: Accepting new bidirectional stream");
                 tokio::spawn(async move {
                     if let Err(e) = handle_stream(send, recv).await {
@@ -114,10 +135,15 @@ async fn handle_connection(conn: quinn::Connection) -> Result<(), Box<dyn std::e
 async fn handle_stream(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let start = std::time::Instant::now();
     // Read proxy request (version 1, address type, address, port)
     let mut header = [0u8; 2];
     recv.read_exact(&mut header).await?;
+    log(&format!(
+        "handle_stream: Header read in {:?}",
+        start.elapsed()
+    ));
 
     if header[0] != PROXY_VERSION {
         return Err(format!("Unsupported version: {}", header[0]).into());
@@ -192,15 +218,17 @@ async fn handle_stream(
     let client_to_target = async {
         let mut buf = [0u8; 4096];
         loop {
-            let n = recv.read(&mut buf).await?;
-            match n {
-                Some(0) | None => break,
+            // Quinn's read() returns Result<Option<usize>>
+            // Some(0) = EOF, None = current stream finished
+            let n_opt = recv.read(&mut buf).await?;
+            match n_opt {
+                Some(0) | None => break, // EOF or stream finished
                 Some(n) => {
                     target_write.write_all(&buf[..n]).await?;
                 }
             }
         }
-        target_write.shutdown().await?;
+        drop(target_write);
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
 
@@ -214,15 +242,13 @@ async fn handle_stream(
             }
             send.write_all(&buf[..n]).await?;
         }
-        send.finish().await?;
+        // Finish the QUIC stream gracefully to send proper FIN to client
+        let _ = send.finish().await;
         Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     };
 
-    // Wait for either direction to complete
-    let _ = tokio::select! {
-        res = client_to_target => res,
-        res = target_to_client => res,
-    };
+    // Run both directions until BOTH complete - both must finish
+    let _ = tokio::try_join!(client_to_target, target_to_client)?;
 
     log("Stream finished");
     Ok(())
@@ -253,7 +279,7 @@ fn dns_cache() -> &'static RwLock<HashMap<String, (std::time::Instant, Vec<Socke
 
 async fn resolve_addresses(
     target: &TargetRequest,
-) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
+) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error + Send + Sync>> {
     match target {
         TargetRequest::Socket(addr) => Ok(vec![*addr]),
         TargetRequest::Domain(domain, port) => {
@@ -270,7 +296,7 @@ async fn resolve_addresses(
 async fn resolve_domain(
     domain: &str,
     port: u16,
-) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
+) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error + Send + Sync>> {
     let cache_key = format!("{}:{}", domain, port);
     {
         let cache = dns_cache().read().await;
@@ -292,13 +318,20 @@ async fn resolve_domain(
         Err(_) => return Err("DNS lookup timed out".into()),
     };
 
+    // Simple bounds check: clear cache if it gets too large
+    // In a real implementation this should be an LRU
     let mut cache = dns_cache().write().await;
+    if cache.len() > 1000 {
+        cache.clear();
+    }
     cache.insert(cache_key, (std::time::Instant::now(), resolved.clone()));
 
     Ok(resolved)
 }
 
-async fn race_connect(addrs: Vec<SocketAddr>) -> Result<TcpStream, Box<dyn std::error::Error>> {
+async fn race_connect(
+    addrs: Vec<SocketAddr>,
+) -> Result<TcpStream, Box<dyn std::error::Error + Send + Sync>> {
     if addrs.len() == 1 {
         let addr = addrs[0];
         let start = std::time::Instant::now();
@@ -338,17 +371,20 @@ async fn race_connect(addrs: Vec<SocketAddr>) -> Result<TcpStream, Box<dyn std::
     let mut last_err = None;
 
     while let Some(res) = tasks.join_next().await {
-        match res.unwrap() {
-            Ok((addr, stream, dur)) => {
+        match res {
+             Ok(Ok((addr, stream, dur))) => {
                 log(&format!("Connected to {} in {:?}", addr, dur));
                 return Ok(stream);
             }
-            Err((addr, e, dur)) => {
+            Ok(Err((addr, e, dur))) => {
                 log(&format!(
                     "Failed to connect to {} in {:?}: {}",
                     addr, dur, e
                 ));
                 last_err = Some(e);
+            }
+            Err(e) => {
+                 log(&format!("Join error in race_connect: {}", e));
             }
         }
     }
@@ -362,7 +398,7 @@ async fn send_proxy_reply(
     send: &mut quinn::SendStream,
     status: u8,
     addr: Option<&SocketAddr>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (atyp, addr_bytes, port) =
         addr.map(reply_address)
             .unwrap_or((ATYP_IPV4, vec![0, 0, 0, 0], 0));
@@ -401,10 +437,16 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     while i < args.len() {
         match args[i].as_str() {
             "--listen" => {
+                if i + 1 >= args.len() {
+                     return Err("Missing value for --listen".into());
+                }
                 listen_addr = args[i + 1].clone();
                 i += 2;
             }
             "--profile" => {
+                if i + 1 >= args.len() {
+                     return Err("Missing value for --profile".into());
+                }
                 profile = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
@@ -469,31 +511,4 @@ fn build_server_config_from_profile(
     configure_transport(&mut transport, profile.quic.as_ref());
     server_config.transport_config(Arc::new(transport));
     Ok(server_config)
-}
-
-fn configure_transport(config: &mut quinn::TransportConfig, quic_cfg: Option<&ProfileQuicConfig>) {
-    let defaults = (
-        std::time::Duration::from_secs(20),
-        std::time::Duration::from_secs(120),
-    );
-    let (keep_alive, idle_timeout) = quic_cfg
-        .map(|cfg| (cfg.keepalive, cfg.idle_timeout))
-        .unwrap_or(defaults);
-
-    let keep_alive = if keep_alive.is_zero() {
-        defaults.0
-    } else {
-        keep_alive
-    };
-    let idle_timeout = if idle_timeout.is_zero() {
-        defaults.1
-    } else {
-        idle_timeout
-    };
-    let max_streams = quic_cfg.map(|cfg| cfg.max_streams).unwrap_or(256);
-
-    config.max_idle_timeout(Some(idle_timeout.try_into().unwrap()));
-    config.keep_alive_interval(Some(keep_alive));
-    config.initial_rtt(std::time::Duration::from_millis(10));
-    config.max_concurrent_bidi_streams(quinn::VarInt::from_u32(max_streams as u32));
 }

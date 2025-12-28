@@ -27,18 +27,11 @@ pub async fn connect(
     socket: std::net::UdpSocket,
     server_addr: SocketAddr,
     framer: Framer,
-    mut config: ClientConfig,
+    config: ClientConfig,
     initiation_payload: &[u8],
     server_name: &str,
 ) -> Result<(Endpoint, quinn::Connection), QuicError> {
-    config
-        .transport_config(std::sync::Arc::new({
-            let mut transport_config = quinn::TransportConfig::default();
-            transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
-            transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
-            transport_config.initial_rtt(std::time::Duration::from_millis(10));
-            transport_config
-        }));
+    // Don't override transport_config - it's already been set from the profile
 
     let mut handshake_conn = UdpPacketConn::new(
         socket
@@ -62,17 +55,10 @@ pub async fn connect_after_handshake(
     socket: std::net::UdpSocket,
     server_addr: SocketAddr,
     framer: Framer,
-    mut config: ClientConfig,
+    config: ClientConfig,
     server_name: &str,
 ) -> Result<(Endpoint, quinn::Connection), QuicError> {
-    config
-        .transport_config(std::sync::Arc::new({
-            let mut transport_config = quinn::TransportConfig::default();
-            transport_config.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
-            transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
-            transport_config.initial_rtt(std::time::Duration::from_millis(10));
-            transport_config
-        }));
+    // Don't override transport_config - it's already been set from the profile
 
     let runtime = default_runtime().ok_or_else(|| QuicError::Setup("no async runtime".into()))?;
     let framed =
@@ -201,27 +187,25 @@ impl AsyncUdpSocket for FramedUdpSocket {
                 .io
                 .try_io(Interest::READABLE, || self.io.try_recv_from(&mut backing))
             {
-                Ok((len, addr)) => {
-                    match self.framer.decode_frame(&backing[..len]) {
-                        Ok((msg, payload)) => {
-                            if msg != MessageType::Transport {
-                                continue;
-                            }
-                            let written = self.copy_payload(&payload, bufs)?;
-                            meta[0] = RecvMeta {
-                                addr,
-                                len: written,
-                                stride: written,
-                                ecn: None,
-                                dst_ip: None,
-                            };
-                            return Poll::Ready(Ok(1));
+                Ok((len, addr)) => match self.framer.decode_frame(&backing[..len]) {
+                    Ok((msg, payload)) => {
+                        if msg != MessageType::Transport {
+                            continue;
                         }
-                        Err(e) => {
-                            eprintln!("poll_recv: Decode error from {}: {}", addr, e);
-                        }
+                        let written = self.copy_payload(&payload, bufs)?;
+                        meta[0] = RecvMeta {
+                            addr,
+                            len: written,
+                            stride: written,
+                            ecn: None,
+                            dst_ip: None,
+                        };
+                        return Poll::Ready(Ok(1));
                     }
-                }
+                    Err(e) => {
+                        eprintln!("poll_recv: Decode error from {}: {}", addr, e);
+                    }
+                },
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,
                 Err(e) => return Poll::Ready(Err(e)),
             }

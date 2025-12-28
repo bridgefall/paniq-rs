@@ -1,6 +1,6 @@
-use std::process::{Command, Stdio, Child};
-use std::time::Duration;
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+use std::time::Duration;
 // use std::io::Write;
 use std::net::TcpListener;
 
@@ -30,7 +30,15 @@ async fn test_real_binaries_curl() {
     // 1. Build binaries to ensure they are fresh
     println!("Building binaries...");
     let status = Command::new("cargo")
-        .args(&["build", "--bin", "proxy-server", "--bin", "socks5d", "--features", "socks5,quic,rcgen"])
+        .args(&[
+            "build",
+            "--bin",
+            "proxy-server",
+            "--bin",
+            "socks5d",
+            "--features",
+            "socks5,quic,rcgen",
+        ])
         .current_dir(&manifest_dir)
         .status()
         .expect("Failed to run cargo build");
@@ -51,7 +59,8 @@ async fn test_real_binaries_curl() {
     println!("Ports: Proxy={}, Socks={}", proxy_port, socks_port);
 
     // Create temp profile
-    let profile_content = format!(r#"{{
+    let profile_content = format!(
+        r#"{{
   "name": "test_profile",
   "proxy_addr": "127.0.0.1:{}",
   "handshake_timeout": "5s",
@@ -67,7 +76,9 @@ async fn test_real_binaries_curl() {
     "encrypted_timestamp": false,
     "require_encrypted_timestamp": false
   }}
-}}"#, proxy_port);
+}}"#,
+        proxy_port
+    );
 
     let profile_path = PathBuf::from(&manifest_dir).join("test_profile_gen.json");
     std::fs::write(&profile_path, profile_content).expect("Failed to write profile");
@@ -77,8 +88,10 @@ async fn test_real_binaries_curl() {
     let proxy_bin = target_dir.join("proxy-server");
     let proxy_child = Command::new(proxy_bin)
         .args(&[
-            "--profile", profile_path.to_str().unwrap(),
-            "--listen", &format!("127.0.0.1:{}", proxy_port)
+            "--profile",
+            profile_path.to_str().unwrap(),
+            "--listen",
+            &format!("127.0.0.1:{}", proxy_port),
         ])
         // .stdout(Stdio::inherit()) // Uncomment to see logs in test output (cargo test -- --nocapture)
         // .stderr(Stdio::inherit())
@@ -87,7 +100,10 @@ async fn test_real_binaries_curl() {
         .spawn()
         .expect("Failed to start proxy-server");
 
-    let _proxy_guard = ChildGuard { child: proxy_child, name: "proxy-server".into() };
+    let _proxy_guard = ChildGuard {
+        child: proxy_child,
+        name: "proxy-server".into(),
+    };
 
     // Give it a moment to bind
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -97,15 +113,20 @@ async fn test_real_binaries_curl() {
     let socks_bin = target_dir.join("socks5d");
     let socks_child = Command::new(socks_bin)
         .args(&[
-            "--profile", profile_path.to_str().unwrap(),
-            "--listen", &format!("127.0.0.1:{}", socks_port)
+            "--profile",
+            profile_path.to_str().unwrap(),
+            "--listen",
+            &format!("127.0.0.1:{}", socks_port),
         ])
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
         .expect("Failed to start socks5d");
 
-    let _socks_guard = ChildGuard { child: socks_child, name: "socks5d".into() };
+    let _socks_guard = ChildGuard {
+        child: socks_child,
+        name: "socks5d".into(),
+    };
 
     tokio::time::sleep(Duration::from_secs(1)).await;
 
@@ -118,10 +139,13 @@ async fn test_real_binaries_curl() {
         let start = std::time::Instant::now();
         let output = Command::new("curl")
             .args(&[
-                "--socks5-hostname", &format!("127.0.0.1:{}", socks_port),
-                "--connect-timeout", "10", // 10s connect timeout
-                "--max-time", "15",        // 15s total timeout
-                "http://ifconfig.io/country_code"
+                "--socks5-hostname",
+                &format!("127.0.0.1:{}", socks_port),
+                "--connect-timeout",
+                "10", // 10s connect timeout
+                "--max-time",
+                "15", // 15s total timeout
+                "http://ifconfig.io/country_code",
             ])
             .output()
             .expect("Failed to run curl");
@@ -138,7 +162,11 @@ async fn test_real_binaries_curl() {
             }
         } else {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            println!("Curl failed (Status {:?}): stderr: {}", output.status.code(), stderr);
+            println!(
+                "Curl failed (Status {:?}): stderr: {}",
+                output.status.code(),
+                stderr
+            );
         }
 
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -147,5 +175,8 @@ async fn test_real_binaries_curl() {
     // Cleanup profile
     let _ = std::fs::remove_file(profile_path);
 
-    assert!(success, "Curl failed to retrieve country code ES via SOCKS5");
+    assert!(
+        success,
+        "Curl failed to retrieve country code ES via SOCKS5"
+    );
 }

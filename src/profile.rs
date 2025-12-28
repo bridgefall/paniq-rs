@@ -1,7 +1,7 @@
 // Profile configuration for paniq client
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 use crate::obf::Config as ObfConfig;
@@ -37,7 +37,9 @@ pub struct Profile {
     pub obfuscation: ObfuscationConfig,
 }
 
-fn default_handshake_attempts() -> usize { 3 }
+fn default_handshake_attempts() -> usize {
+    3
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct QuicConfig {
@@ -59,11 +61,19 @@ pub struct QuicConfig {
     pub max_streams: usize,
 }
 
-fn default_max_packet_size() -> usize { 1350 }
-fn default_max_payload() -> usize { 1200 }
-fn default_max_streams() -> usize { 256 }
+fn default_max_packet_size() -> usize {
+    1350
+}
+fn default_max_payload() -> usize {
+    1200
+}
+fn default_max_streams() -> usize {
+    256
+}
 #[allow(dead_code)]
-fn default_duration() -> Duration { Duration::from_secs(30) }
+fn default_duration() -> Duration {
+    Duration::from_secs(30)
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TransportPadding {
@@ -83,11 +93,21 @@ pub struct TransportPadding {
     pub pad_burst_prob: f64,
 }
 
-fn default_pad_min() -> usize { 16 }
-fn default_pad_max() -> usize { 96 }
-fn default_pad_burst_min() -> usize { 96 }
-fn default_pad_burst_max() -> usize { 104 }
-fn default_pad_burst_prob() -> f64 { 0.02 }
+fn default_pad_min() -> usize {
+    16
+}
+fn default_pad_max() -> usize {
+    96
+}
+fn default_pad_burst_min() -> usize {
+    96
+}
+fn default_pad_burst_max() -> usize {
+    104
+}
+fn default_pad_burst_prob() -> f64 {
+    0.02
+}
 
 /// Obfuscation configuration
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -188,13 +208,27 @@ pub struct ObfuscationConfig {
     pub rate_limit_burst: u64,
 }
 
-fn default_true() -> bool { true }
-fn default_skew_soft_seconds() -> i64 { 15 }
-fn default_skew_hard_seconds() -> i64 { 30 }
-fn default_replay_window_seconds() -> usize { 30 }
-fn default_replay_cache_size() -> usize { 4096 }
-fn default_rate_limit_pps() -> u64 { 200 }
-fn default_rate_limit_burst() -> u64 { 500 }
+fn default_true() -> bool {
+    true
+}
+fn default_skew_soft_seconds() -> i64 {
+    15
+}
+fn default_skew_hard_seconds() -> i64 {
+    30
+}
+fn default_replay_window_seconds() -> usize {
+    30
+}
+fn default_replay_cache_size() -> usize {
+    4096
+}
+fn default_rate_limit_pps() -> u64 {
+    200
+}
+fn default_rate_limit_burst() -> u64 {
+    500
+}
 
 impl ObfuscationConfig {
     pub fn to_obf_config(&self) -> ObfConfig {
@@ -242,9 +276,9 @@ impl Profile {
 
 // Serde duration modules - handles string formats like "5s", "20s", "2m"
 pub mod serde_duration {
-    use serde::{Deserializer, Serializer, Serialize, de::Visitor};
-    use std::time::Duration;
+    use serde::{de::Visitor, Deserializer, Serialize, Serializer};
     use std::fmt;
+    use std::time::Duration;
 
     // Module for optional Duration
     pub mod opt {
@@ -316,7 +350,9 @@ pub mod serde_duration {
             formatter.write_str("a duration string (e.g., \"5s\", \"2m\") or null")
         }
 
-        fn visit_none<E>(self) -> Result<Self::Value, E> { Ok(None) }
+        fn visit_none<E>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
 
         fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
         where
@@ -348,9 +384,8 @@ pub mod serde_duration {
         where
             E: serde::de::Error,
         {
-            parse_duration_str(value).ok_or_else(|| {
-                E::custom(format!("invalid duration string: {}", value))
-            })
+            parse_duration_str(value)
+                .ok_or_else(|| E::custom(format!("invalid duration string: {}", value)))
         }
 
         fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
@@ -373,16 +408,16 @@ pub mod serde_duration {
     fn parse_duration_str(s: &str) -> Option<Duration> {
         let s = s.trim();
         if s.ends_with('s') {
-            let num = s[..s.len()-1].parse::<u64>().ok()?;
+            let num = s[..s.len() - 1].parse::<u64>().ok()?;
             Some(Duration::from_secs(num))
         } else if s.ends_with('m') {
-            let num = s[..s.len()-1].parse::<u64>().ok()?;
+            let num = s[..s.len() - 1].parse::<u64>().ok()?;
             Some(Duration::from_secs(num * 60))
         } else if s.ends_with('h') {
-            let num = s[..s.len()-1].parse::<u64>().ok()?;
+            let num = s[..s.len() - 1].parse::<u64>().ok()?;
             Some(Duration::from_secs(num * 3600))
         } else if s.ends_with("ms") {
-            let num = s[..s.len()-2].parse::<u64>().ok()?;
+            let num = s[..s.len() - 2].parse::<u64>().ok()?;
             Some(Duration::from_millis(num))
         } else {
             // Try as plain seconds

@@ -143,14 +143,9 @@ fn main() {
         burst_max: 0,
         burst_prob: 0.0,
     };
-    let transport_payload = build_transport_payload(
-        b"abcd",
-        Some(7),
-        &padding_policy,
-        128,
-        &mut rng_transport,
-    )
-    .expect("transport");
+    let transport_payload =
+        build_transport_payload(b"abcd", Some(7), &padding_policy, 128, &mut rng_transport)
+            .expect("transport");
     let transport_vec = TransportVector {
         counter: Some(7),
         padding: transport_payload.len() - (8 + 2 + 4),
@@ -189,12 +184,12 @@ fn main() {
     let base_ts = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
     let mut replay_cache = ReplayCache::new(Duration::from_secs(5), 3);
     let replay_payloads = vec![
-        (0u64, b"alpha".to_vec()),            // first insert
-        (0, b"alpha".to_vec()),               // duplicate at same timestamp
-        (2, b"beta".to_vec()),                // new payload within window
-        (7, b"alpha".to_vec()),               // outside window -> accepted again
-        (8, b"gamma".to_vec()),               // fills cache
-        (9, b"delta".to_vec()),               // triggers eviction of oldest
+        (0u64, b"alpha".to_vec()), // first insert
+        (0, b"alpha".to_vec()),    // duplicate at same timestamp
+        (2, b"beta".to_vec()),     // new payload within window
+        (7, b"alpha".to_vec()),    // outside window -> accepted again
+        (8, b"gamma".to_vec()),    // fills cache
+        (9, b"delta".to_vec()),    // triggers eviction of oldest
     ];
     let mut replay_events = Vec::new();
     for (offset, payload) in replay_payloads {
