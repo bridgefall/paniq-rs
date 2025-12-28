@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 
-const MAX_END_TO_END_LATENCY: Duration = Duration::from_millis(300);
+const MAX_END_TO_END_LATENCY: Duration = Duration::from_millis(200);
 
 use paniq::obf::{Config, Framer, SharedRng};
 use paniq::quic::client::connect_after_handshake;
@@ -59,7 +59,13 @@ fn get_test_certs() -> (quinn::ServerConfig, quinn::ClientConfig) {
         .with_no_client_auth()
         .with_single_cert(vec![cert.clone()], key)
         .unwrap();
-    let server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
+    let mut server_transport = quinn::TransportConfig::default();
+    server_transport.keep_alive_interval(Some(Duration::from_secs(20)));
+    server_transport.max_idle_timeout(Some(Duration::from_secs(120).try_into().unwrap()));
+    server_transport.initial_rtt(Duration::from_millis(10));
+    server_transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(256));
+    server_config.transport_config(Arc::new(server_transport));
 
     // Client config
     let mut roots = RootCertStore::empty();
@@ -68,7 +74,13 @@ fn get_test_certs() -> (quinn::ServerConfig, quinn::ClientConfig) {
         .with_safe_defaults()
         .with_root_certificates(roots)
         .with_no_client_auth();
-    let client_config = quinn::ClientConfig::new(Arc::new(client_crypto));
+    let mut client_config = quinn::ClientConfig::new(Arc::new(client_crypto));
+    let mut client_transport = quinn::TransportConfig::default();
+    client_transport.keep_alive_interval(Some(Duration::from_secs(20)));
+    client_transport.max_idle_timeout(Some(Duration::from_secs(120).try_into().unwrap()));
+    client_transport.initial_rtt(Duration::from_millis(10));
+    client_transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(256));
+    client_config.transport_config(Arc::new(client_transport));
 
     (server_config, client_config)
 }
@@ -81,6 +93,7 @@ async fn start_http_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let handle = tokio::spawn(async move {
         loop {
             if let Ok((mut socket, _)) = listener.accept().await {
+                let _ = socket.set_nodelay(true);
                 tokio::spawn(async move {
                     let mut buf = [0u8; 1024];
                     if let Ok(n) = socket.read(&mut buf).await {
@@ -317,7 +330,11 @@ async fn socks5_over_quic_roundtrip() -> Duration {
     assert!(response.contains("ok"));
 
     let elapsed = latency_start.elapsed();
-    assert!(elapsed < MAX_END_TO_END_LATENCY, "End-to-end latency too high: {:?}", elapsed);
+    assert!(
+        elapsed < MAX_END_TO_END_LATENCY,
+        "End-to-end latency too high: {:?}",
+        elapsed
+    );
 
     // Cleanup
     drop(socks_conn);
