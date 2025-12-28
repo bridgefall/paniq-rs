@@ -1,21 +1,39 @@
 // Proxy Server - accepts obfuscated QUIC connections and forwards to destinations
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::io;
+use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::OnceLock;
 
-// use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::RwLock;
 
-use paniq::quic::server::listen_on_socket;
 use paniq::obf::Framer;
-use paniq::profile::Profile;
+use paniq::profile::{Profile, QuicConfig as ProfileQuicConfig};
+use paniq::quic::server::listen_on_socket;
 
 mod shared_cert;
+
+const QUIC_ALPN: &str = "bridgefall-paniq";
+const PROXY_VERSION: u8 = 0x01;
+const STATUS_SUCCESS: u8 = 0x00;
+const STATUS_FAILURE: u8 = 0x01;
+const ATYP_IPV4: u8 = 0x01;
+const ATYP_DOMAIN: u8 = 0x03;
+const ATYP_IPV6: u8 = 0x04;
 
 fn log(msg: &str) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    eprintln!("[{}.{:03}] proxy-server: {}", now.as_secs(), now.subsec_millis(), msg);
+    eprintln!(
+        "[{}.{:03}] proxy-server: {}",
+        now.as_secs(),
+        now.subsec_millis(),
+        msg
+    );
 }
 
 #[tokio::main]
@@ -60,7 +78,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn handle_connection(conn: quinn::Connection) -> Result<(), Box<dyn std::error::Error>> {
-    log(&format!("handle_connection: Starting for {}", conn.remote_address()));
+    log(&format!(
+        "handle_connection: Starting for {}",
+        conn.remote_address()
+    ));
     // Handle bidirectional streams from the client
     loop {
         match conn.accept_bi().await {
@@ -91,30 +112,31 @@ async fn handle_connection(conn: quinn::Connection) -> Result<(), Box<dyn std::e
 }
 
 async fn handle_stream(
-    send: quinn::SendStream,
+    mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Read proxy request (version 1, address type, address, port)
     let mut header = [0u8; 2];
     recv.read_exact(&mut header).await?;
 
-    if header[0] != 0x01 {
+    if header[0] != PROXY_VERSION {
         return Err(format!("Unsupported version: {}", header[0]).into());
     }
 
     let addr_type = header[1];
-    let target_str: String = match addr_type {
+    let target = match addr_type {
         0x01 => {
-            // IPv4
             let mut addr_bytes = [0u8; 4];
             recv.read_exact(&mut addr_bytes).await?;
             let mut port_bytes = [0u8; 2];
             recv.read_exact(&mut port_bytes).await?;
             let port = u16::from_be_bytes(port_bytes);
-            format!("{}:{}", std::net::Ipv4Addr::from(addr_bytes), port)
+            TargetRequest::Socket(SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::from(addr_bytes)),
+                port,
+            ))
         }
         0x03 => {
-            // Domain
             let mut len_bytes = [0u8; 1];
             recv.read_exact(&mut len_bytes).await?;
             let len = len_bytes[0] as usize;
@@ -124,73 +146,44 @@ async fn handle_stream(
             recv.read_exact(&mut port_bytes).await?;
             let port = u16::from_be_bytes(port_bytes);
             let domain = String::from_utf8_lossy(&domain_bytes).to_string();
-            format!("{}:{}", domain, port)
+            TargetRequest::Domain(domain, port)
         }
         0x04 => {
-            // IPv6
             let mut addr_bytes = [0u8; 16];
             recv.read_exact(&mut addr_bytes).await?;
             let mut port_bytes = [0u8; 2];
             recv.read_exact(&mut port_bytes).await?;
             let port = u16::from_be_bytes(port_bytes);
-            format!("{}:{}", std::net::Ipv6Addr::from(addr_bytes), port)
+            TargetRequest::Socket(SocketAddr::new(
+                std::net::IpAddr::V6(std::net::Ipv6Addr::from(addr_bytes)),
+                port,
+            ))
         }
         _ => return Err(format!("Unsupported address type: {}", addr_type).into()),
     };
 
-    log(&format!("Connecting to {}", target_str));
+    log(&format!("Connecting to {}", target.description()));
 
-    // Connect to the target using Happy Eyeballs (Race connections)
-    let addrs = match tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        tokio::net::lookup_host(&target_str)
-    ).await {
-        Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
-        Ok(Err(e)) => return Err(format!("DNS lookup failed: {}", e).into()),
-        Err(_) => return Err("DNS lookup timed out".into()),
+    let addrs = match resolve_addresses(&target).await {
+        Ok(addrs) => addrs,
+        Err(e) => {
+            let _ = send_proxy_reply(&mut send, STATUS_FAILURE, None).await;
+            return Err(e);
+        }
     };
 
-    if addrs.is_empty() {
-        return Err("No addresses resolved".into());
-    }
-
-    let target_stream = {
-        let mut tasks = tokio::task::JoinSet::new();
-        for addr in addrs {
-            tasks.spawn(async move {
-                let start = std::time::Instant::now();
-                match tokio::time::timeout(std::time::Duration::from_secs(10), tokio::net::TcpStream::connect(addr)).await {
-                    Ok(Ok(stream)) => Ok((addr, stream, start.elapsed())),
-                    Ok(Err(e)) => Err((addr, e, start.elapsed())),
-                    Err(_) => Err((addr, std::io::Error::new(std::io::ErrorKind::TimedOut, "connect timed out"), start.elapsed())),
-                }
-            });
-        }
-
-        let mut success = None;
-        let mut last_err = None;
-
-        while let Some(res) = tasks.join_next().await {
-             match res.unwrap() {
-                 Ok((addr, stream, dur)) => {
-                     log(&format!("Connected to {} in {:?}", addr, dur));
-                     success = Some(stream);
-                     break;
-                 }
-                 Err((addr, e, dur)) => {
-                     log(&format!("Failed to connect to {} in {:?}: {}", addr, dur, e));
-                     last_err = Some(e);
-                 }
-             }
-        }
-
-        match success {
-            Some(s) => s,
-            None => return Err(last_err.unwrap_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "all racing attempts failed")).into()),
+    let target_stream = match race_connect(addrs).await {
+        Ok(stream) => stream,
+        Err(e) => {
+            let _ = send_proxy_reply(&mut send, STATUS_FAILURE, None).await;
+            return Err(e);
         }
     };
 
     target_stream.set_nodelay(true)?;
+
+    let reply_addr = target_stream.local_addr().ok();
+    send_proxy_reply(&mut send, STATUS_SUCCESS, reply_addr.as_ref()).await?;
 
     // Client -> Target
     let (mut target_read, mut target_write) = target_stream.into_split();
@@ -216,7 +209,9 @@ async fn handle_stream(
         let mut buf = [0u8; 4096];
         loop {
             let n = target_read.read(&mut buf).await?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             send.write_all(&buf[..n]).await?;
         }
         send.finish().await?;
@@ -231,6 +226,163 @@ async fn handle_stream(
 
     log("Stream finished");
     Ok(())
+}
+
+#[derive(Clone)]
+enum TargetRequest {
+    Socket(SocketAddr),
+    Domain(String, u16),
+}
+
+impl TargetRequest {
+    fn description(&self) -> String {
+        match self {
+            TargetRequest::Socket(addr) => addr.to_string(),
+            TargetRequest::Domain(domain, port) => format!("{}:{}", domain, port),
+        }
+    }
+}
+
+static DNS_CACHE: OnceLock<RwLock<HashMap<String, (std::time::Instant, Vec<SocketAddr>)>>> =
+    OnceLock::new();
+const DNS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn dns_cache() -> &'static RwLock<HashMap<String, (std::time::Instant, Vec<SocketAddr>)>> {
+    DNS_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+async fn resolve_addresses(
+    target: &TargetRequest,
+) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
+    match target {
+        TargetRequest::Socket(addr) => Ok(vec![*addr]),
+        TargetRequest::Domain(domain, port) => {
+            let addrs = resolve_domain(domain, *port).await?;
+            if addrs.is_empty() {
+                Err("No addresses resolved".into())
+            } else {
+                Ok(addrs)
+            }
+        }
+    }
+}
+
+async fn resolve_domain(
+    domain: &str,
+    port: u16,
+) -> Result<Vec<SocketAddr>, Box<dyn std::error::Error>> {
+    let cache_key = format!("{}:{}", domain, port);
+    {
+        let cache = dns_cache().read().await;
+        if let Some((cached_at, addrs)) = cache.get(&cache_key) {
+            if cached_at.elapsed() < DNS_CACHE_TTL {
+                return Ok(addrs.clone());
+            }
+        }
+    }
+
+    let resolved = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::lookup_host((domain, port)),
+    )
+    .await
+    {
+        Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
+        Ok(Err(e)) => return Err(format!("DNS lookup failed: {}", e).into()),
+        Err(_) => return Err("DNS lookup timed out".into()),
+    };
+
+    let mut cache = dns_cache().write().await;
+    cache.insert(cache_key, (std::time::Instant::now(), resolved.clone()));
+
+    Ok(resolved)
+}
+
+async fn race_connect(addrs: Vec<SocketAddr>) -> Result<TcpStream, Box<dyn std::error::Error>> {
+    if addrs.len() == 1 {
+        let addr = addrs[0];
+        let start = std::time::Instant::now();
+        return match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            TcpStream::connect(addr),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => {
+                log(&format!("Connected to {} in {:?}", addr, start.elapsed()));
+                Ok(stream)
+            }
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => Err(io::Error::new(io::ErrorKind::TimedOut, "connect timed out").into()),
+        };
+    }
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for addr in addrs {
+        tasks.spawn(async move {
+            let start = std::time::Instant::now();
+            match tokio::time::timeout(std::time::Duration::from_secs(10), TcpStream::connect(addr))
+                .await
+            {
+                Ok(Ok(stream)) => Ok((addr, stream, start.elapsed())),
+                Ok(Err(e)) => Err((addr, e, start.elapsed())),
+                Err(_) => Err((
+                    addr,
+                    io::Error::new(io::ErrorKind::TimedOut, "connect timed out"),
+                    start.elapsed(),
+                )),
+            }
+        });
+    }
+
+    let mut last_err = None;
+
+    while let Some(res) = tasks.join_next().await {
+        match res.unwrap() {
+            Ok((addr, stream, dur)) => {
+                log(&format!("Connected to {} in {:?}", addr, dur));
+                return Ok(stream);
+            }
+            Err((addr, e, dur)) => {
+                log(&format!(
+                    "Failed to connect to {} in {:?}: {}",
+                    addr, dur, e
+                ));
+                last_err = Some(e);
+            }
+        }
+    }
+
+    Err(last_err
+        .unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "all racing attempts failed"))
+        .into())
+}
+
+async fn send_proxy_reply(
+    send: &mut quinn::SendStream,
+    status: u8,
+    addr: Option<&SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (atyp, addr_bytes, port) =
+        addr.map(reply_address)
+            .unwrap_or((ATYP_IPV4, vec![0, 0, 0, 0], 0));
+
+    let mut buf = Vec::with_capacity(6 + addr_bytes.len());
+    buf.push(PROXY_VERSION);
+    buf.push(status);
+    buf.push(atyp);
+    buf.extend_from_slice(&addr_bytes);
+    buf.extend_from_slice(&port.to_be_bytes());
+    send.write_all(&buf).await?;
+    send.flush().await?;
+    Ok(())
+}
+
+fn reply_address(addr: &SocketAddr) -> (u8, Vec<u8>, u16) {
+    match addr {
+        SocketAddr::V4(v4) => (ATYP_IPV4, v4.ip().octets().to_vec(), v4.port()),
+        SocketAddr::V6(v6) => (ATYP_IPV6, v6.ip().octets().to_vec(), v6.port()),
+    }
 }
 
 struct Args {
@@ -282,22 +434,66 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
 fn build_server_config() -> Result<quinn::ServerConfig, Box<dyn std::error::Error>> {
     let test_cert = shared_cert::get_test_certificate();
 
-    let server_crypto = rustls::ServerConfig::builder()
+    let mut server_crypto = rustls::ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(vec![test_cert.cert.clone()], test_cert.key.clone())?;
+    server_crypto
+        .alpn_protocols
+        .push(QUIC_ALPN.as_bytes().to_vec());
 
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
     let mut transport = quinn::TransportConfig::default();
-    transport.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
-    transport.keep_alive_interval(Some(std::time::Duration::from_secs(1)));
-    transport.initial_rtt(std::time::Duration::from_millis(10));
+    configure_transport(&mut transport, None);
     server_config.transport_config(Arc::new(transport));
     Ok(server_config)
 }
 
 // For now, use the same test cert approach. In production, this would load
 // certificates from the profile's server_private_key or from cert files.
-fn build_server_config_from_profile(_profile: &Profile) -> Result<quinn::ServerConfig, Box<dyn std::error::Error>> {
-    build_server_config()
+fn build_server_config_from_profile(
+    profile: &Profile,
+) -> Result<quinn::ServerConfig, Box<dyn std::error::Error>> {
+    let test_cert = shared_cert::get_test_certificate();
+
+    let mut server_crypto = rustls::ServerConfig::builder()
+        .with_safe_defaults()
+        .with_no_client_auth()
+        .with_single_cert(vec![test_cert.cert.clone()], test_cert.key.clone())?;
+    server_crypto
+        .alpn_protocols
+        .push(QUIC_ALPN.as_bytes().to_vec());
+
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
+    let mut transport = quinn::TransportConfig::default();
+    configure_transport(&mut transport, profile.quic.as_ref());
+    server_config.transport_config(Arc::new(transport));
+    Ok(server_config)
+}
+
+fn configure_transport(config: &mut quinn::TransportConfig, quic_cfg: Option<&ProfileQuicConfig>) {
+    let defaults = (
+        std::time::Duration::from_secs(20),
+        std::time::Duration::from_secs(120),
+    );
+    let (keep_alive, idle_timeout) = quic_cfg
+        .map(|cfg| (cfg.keepalive, cfg.idle_timeout))
+        .unwrap_or(defaults);
+
+    let keep_alive = if keep_alive.is_zero() {
+        defaults.0
+    } else {
+        keep_alive
+    };
+    let idle_timeout = if idle_timeout.is_zero() {
+        defaults.1
+    } else {
+        idle_timeout
+    };
+    let max_streams = quic_cfg.map(|cfg| cfg.max_streams).unwrap_or(256);
+
+    config.max_idle_timeout(Some(idle_timeout.try_into().unwrap()));
+    config.keep_alive_interval(Some(keep_alive));
+    config.initial_rtt(std::time::Duration::from_millis(10));
+    config.max_concurrent_bidi_streams(quinn::VarInt::from_u32(max_streams as u32));
 }
