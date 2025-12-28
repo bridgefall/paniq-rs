@@ -241,7 +241,7 @@ where
                 Err(e) => return Err(e),
             }
         }
-        remote_write.shutdown().await?;
+        drop(remote_write);
         Ok::<(), std::io::Error>(())
     };
 
@@ -254,16 +254,13 @@ where
                 Err(e) => return Err(e),
             }
         }
-        client_write.shutdown().await?;
+        drop(client_write);
         Ok::<(), std::io::Error>(())
     };
 
-    let relay_result = tokio::select! {
-        res = client_to_remote => res,
-        res = remote_to_client => res,
-    };
+    // Run both directions until BOTH complete - both must finish
+    let _ = tokio::try_join!(client_to_remote, remote_to_client)?;
 
-    relay_result.map_err(SocksError::Io)?;
     Ok(())
 }
 

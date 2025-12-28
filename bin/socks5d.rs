@@ -3,11 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
-use paniq::obf::{Framer, SharedRng};
-use paniq::profile::{Profile, QuicConfig as ProfileQuicConfig};
+use paniq::obf::{Framer, Config as ObfConfig};
+use paniq::profile::Profile;
+use paniq::quic::common::configure_transport;
 use paniq::quic::client::connect_after_handshake;
 use paniq::socks5::{AuthConfig, IoStream, RelayConnector, Socks5Server, SocksError, TargetAddr};
 
@@ -19,6 +20,8 @@ const STATUS_SUCCESS: u8 = 0x00;
 const ATYP_IPV4: u8 = 0x01;
 const ATYP_DOMAIN: u8 = 0x03;
 const ATYP_IPV6: u8 = 0x04;
+
+use tracing::{info, error, warn};
 
 fn log(msg: &str) {
     let now = std::time::SystemTime::now()
@@ -44,33 +47,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let obf_config = profile.obf_config();
-    let framer = Framer::new(obf_config)?;
-    let _rng = SharedRng::from_seed(12345);
 
-    // Connect to proxy server
-    let std_sock = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    // Removed unused _rng
 
+    // Prepare for connection
     let proxy_addr = profile.proxy_addr.parse()?;
-    log(&format!("Connecting to proxy at {}", proxy_addr));
-    let (endpoint, quinn_conn) = connect_after_handshake(
-        std_sock,
+
+    // Create connector that manages the connection state
+    let connector = QuicConnector::new(
         proxy_addr,
-        framer,
+        obf_config.clone(),
         args.quic_client_config,
-        "paniq",
-    )
-    .await?;
+    );
+
+    // Initial connection attempt
+    log(&format!("Connecting to proxy at {}", proxy_addr));
+    if let Err(e) = connector.ensure_connected().await {
+        log(&format!("Warning: Initial connection failed: {}", e));
+        // We continue, as it might just be temporary unavailability
+    } else {
+        log(&format!("Connected to proxy at {}", proxy_addr));
+    }
 
     log(&format!("Listening on {}", args.listen_addr));
-    log(&format!("Connected to proxy at {}", proxy_addr));
 
     let listener = TcpListener::bind(&args.listen_addr).await?;
-
-    // Create connector that uses QUIC streams
-    let connector = QuicConnector {
-        conn: quinn_conn,
-        _endpoint: Arc::new(endpoint),
-    };
 
     let auth = if let Some((user, pass)) = args.auth {
         let mut users = std::collections::HashMap::new();
@@ -82,17 +83,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let server = Arc::new(Socks5Server::new(connector, auth));
 
+    // Graceful shutdown handling
     loop {
-        let (stream, addr) = listener.accept().await?;
-        let _ = stream.set_nodelay(true);
-        log(&format!("Connection from {}", addr));
-        let server = server.clone();
-        tokio::spawn(async move {
-            if let Err(e) = server.serve_stream(stream).await {
-                log(&format!("Error serving {}: {}", addr, e));
+        tokio::select! {
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((stream, addr)) => {
+                        let _ = stream.set_nodelay(true);
+                        log(&format!("Connection from {}", addr));
+                        let server = server.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = server.serve_stream(stream).await {
+                                log(&format!("Error serving {}: {}", addr, e));
+                            }
+                        });
+                    }
+                    Err(e) => {
+                         log(&format!("Accept error: {}", e));
+                    }
+                }
             }
-        });
+            _ = tokio::signal::ctrl_c() => {
+                log("Shutting down gracefully...");
+                break;
+            }
+        }
     }
+
+    Ok(())
 }
 
 struct Args {
@@ -114,18 +132,30 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
     while i < args.len() {
         match args[i].as_str() {
             "--listen" => {
+                if i + 1 >= args.len() {
+                    return Err("Missing value for --listen".into());
+                }
                 listen_addr = args[i + 1].clone();
                 i += 2;
             }
             "--profile" => {
+                if i + 1 >= args.len() {
+                    return Err("Missing value for --profile".into());
+                }
                 profile = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             }
             "--username" => {
+                 if i + 1 >= args.len() {
+                    return Err("Missing value for --username".into());
+                }
                 username = Some(args[i + 1].clone());
                 i += 2;
             }
             "--password" => {
+                 if i + 1 >= args.len() {
+                    return Err("Missing value for --password".into());
+                }
                 password = Some(args[i + 1].clone());
                 i += 2;
             }
@@ -200,53 +230,90 @@ fn build_client_config_from_profile(
     Ok(client_config)
 }
 
-fn configure_transport(config: &mut quinn::TransportConfig, quic_cfg: Option<&ProfileQuicConfig>) {
-    let defaults = (
-        std::time::Duration::from_secs(20),
-        std::time::Duration::from_secs(120),
-    );
-    let (keep_alive, idle_timeout) = quic_cfg
-        .map(|cfg| (cfg.keepalive, cfg.idle_timeout))
-        .unwrap_or(defaults);
 
-    let keep_alive = if keep_alive.is_zero() {
-        defaults.0
-    } else {
-        keep_alive
-    };
-    let idle_timeout = if idle_timeout.is_zero() {
-        defaults.1
-    } else {
-        idle_timeout
-    };
-
-    config.max_idle_timeout(Some(idle_timeout.try_into().unwrap()));
-    config.keep_alive_interval(Some(keep_alive));
-    config.initial_rtt(std::time::Duration::from_millis(10));
-    let max_streams = quic_cfg
-        .map(|cfg| {
-            if cfg.max_streams == 0 {
-                256
-            } else {
-                cfg.max_streams
-            }
-        })
-        .unwrap_or(256) as u32;
-    config.max_concurrent_bidi_streams(quinn::VarInt::from_u32(max_streams));
-}
 
 struct QuicConnector {
-    conn: quinn::Connection,
-    _endpoint: Arc<quinn::Endpoint>,
+    state: tokio::sync::RwLock<ConnectorState>,
+    proxy_addr: std::net::SocketAddr,
+    obf_config: ObfConfig,
+    client_config: quinn::ClientConfig,
+}
+
+struct ConnectorState {
+    conn: Option<quinn::Connection>,
+    _endpoint: Option<Arc<quinn::Endpoint>>,
 }
 
 impl QuicConnector {
+    fn new(
+        proxy_addr: std::net::SocketAddr,
+        obf_config: ObfConfig,
+        client_config: quinn::ClientConfig,
+    ) -> Self {
+        Self {
+            state: tokio::sync::RwLock::new(ConnectorState {
+                conn: None,
+                _endpoint: None,
+            }),
+            proxy_addr,
+            obf_config,
+            client_config,
+        }
+    }
+
+    async fn ensure_connected(&self) -> Result<quinn::Connection, String> {
+        // Fast path: check if existing connection is alive
+        {
+            let state = self.state.read().await;
+            if let Some(conn) = &state.conn {
+                if conn.close_reason().is_none() {
+                    return Ok(conn.clone());
+                }
+            }
+        }
+
+        // Slow path: reconnect
+        let mut state = self.state.write().await;
+
+        // Check again in case someone else connected while we waited for write lock
+        if let Some(conn) = &state.conn {
+            if conn.close_reason().is_none() {
+                return Ok(conn.clone());
+            }
+        }
+
+        log("Reconnecting to proxy...");
+
+        // We bind a fresh socket for the new connection
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0")
+            .map_err(|e| format!("Failed to bind socket: {}", e))?;
+
+        // Create fresh framer
+        let framer = Framer::new(self.obf_config.clone()).map_err(|e| format!("Framer error: {}", e))?;
+
+        let (endpoint, conn) = connect_after_handshake(
+            socket,
+            self.proxy_addr,
+            framer,
+            self.client_config.clone(),
+            "paniq",
+        )
+        .await
+        .map_err(|e| format!("Connection failed: {}", e))?;
+
+        state.conn = Some(conn.clone());
+        state._endpoint = Some(Arc::new(endpoint));
+
+        log("Reconnected successfully");
+        Ok(conn)
+    }
+
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, String> {
-        let conn = &self.conn;
+        let conn = self.ensure_connected().await?;
 
         let start = std::time::Instant::now();
         // Open a new bidirectional stream
-        let (mut send, recv) = conn.open_bi().await.map_err(|e| {
+        let (mut send, mut recv) = conn.open_bi().await.map_err(|e| {
             log(&format!("[QuicConnector] connect: open_bi failed: {}", e));
             format!("open_bi failed: {}", e)
         })?;
@@ -296,7 +363,9 @@ impl QuicConnector {
             format!("flush failed: {}", e)
         })?;
 
+        log("[QuicConnector] connect: Waiting for proxy reply...");
         read_proxy_reply(&mut recv).await?;
+        log("[QuicConnector] connect: Proxy reply received");
 
         log(&format!(
             "[QuicConnector] connect: Proxy request accepted for {:?}",
@@ -311,10 +380,15 @@ impl QuicConnector {
 }
 
 async fn read_proxy_reply(recv: &mut quinn::RecvStream) -> Result<(), String> {
+    let start = std::time::Instant::now();
     let mut header = [0u8; 3];
     recv.read_exact(&mut header)
         .await
         .map_err(|e| format!("proxy reply header: {}", e))?;
+    log(&format!(
+        "[read_proxy_reply] Header read in {:?}",
+        start.elapsed()
+    ));
 
     if header[0] != PROXY_VERSION {
         return Err(format!("unsupported proxy reply version: {}", header[0]));

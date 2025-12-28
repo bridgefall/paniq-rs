@@ -55,9 +55,7 @@ fn udp_packet_conn_handshake_round_trip() {
 
     let server_thread = thread::spawn(move || {
         let result = server.handle_preamble().unwrap();
-        server
-            .send_response(MessageType::Response, b"ok")
-            .unwrap();
+        server.send_response(MessageType::Response, b"ok").unwrap();
         result
     });
 

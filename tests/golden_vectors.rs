@@ -12,8 +12,8 @@ use x25519_dalek::StaticSecret;
 use paniq::envelope::enc_timestamp::{open_timestamp, seal_timestamp};
 use paniq::envelope::mac1::{compute_mac1, verify_mac1};
 use paniq::envelope::padding::PaddingPolicy;
-use paniq::envelope::transport::{decode_transport_payload, build_transport_payload};
 use paniq::envelope::replay::ReplayCache;
+use paniq::envelope::transport::{build_transport_payload, decode_transport_payload};
 use paniq::obf::{parse_chain_with_rng, Config, Framer, MessageType, SharedRng};
 
 #[derive(Deserialize)]
@@ -147,7 +147,10 @@ fn frames_match_golden_vectors() {
         let (msg_type, decoded) = framer.decode_frame(&encoded).expect("decode");
         assert_eq!(msg_type as u8, frame_vec.msg_type);
         assert_eq!(decoded, payload);
-        assert_eq!(frame_vec.padding, encoded.len().saturating_sub(payload.len() + 5));
+        assert_eq!(
+            frame_vec.padding,
+            encoded.len().saturating_sub(payload.len() + 5)
+        );
     }
 }
 
@@ -165,14 +168,19 @@ fn transport_matches_golden_vectors() {
             burst_prob: 0.0,
         };
         let payload = hex_decode(&transport_vec.payload_hex).unwrap();
-        let encoded = build_transport_payload(&payload, transport_vec.counter, &policy, 128, &mut rng)
-            .expect("transport encode");
+        let encoded =
+            build_transport_payload(&payload, transport_vec.counter, &policy, 128, &mut rng)
+                .expect("transport encode");
         assert_eq!(hex_encode(&encoded), transport_vec.output_hex);
 
-        let decoded = decode_transport_payload(&encoded, true, Some(|c| transport_vec.counter == Some(c)))
-            .expect("transport decode");
+        let decoded =
+            decode_transport_payload(&encoded, true, Some(|c| transport_vec.counter == Some(c)))
+                .expect("transport decode");
         assert_eq!(decoded, payload);
-        assert_eq!(transport_vec.padding, encoded.len() - (8 + 2 + payload.len()));
+        assert_eq!(
+            transport_vec.padding,
+            encoded.len() - (8 + 2 + payload.len())
+        );
     }
 }
 
@@ -193,16 +201,25 @@ fn encrypted_timestamps_match_golden_vectors() {
     let vectors = load_vectors();
     for ts_vec in vectors.enc_timestamp {
         let mut rng = ChaCha20Rng::seed_from_u64(vectors.seed);
-        let client_secret = StaticSecret::from(<[u8; 32]>::try_from(hex_decode(&ts_vec.client_secret_hex).unwrap()).unwrap());
-        let server_secret = StaticSecret::from(<[u8; 32]>::try_from(hex_decode(&ts_vec.server_secret_hex).unwrap()).unwrap());
+        let client_secret = StaticSecret::from(
+            <[u8; 32]>::try_from(hex_decode(&ts_vec.client_secret_hex).unwrap()).unwrap(),
+        );
+        let server_secret = StaticSecret::from(
+            <[u8; 32]>::try_from(hex_decode(&ts_vec.server_secret_hex).unwrap()).unwrap(),
+        );
         let ts = SystemTime::UNIX_EPOCH + Duration::from_secs(ts_vec.timestamp);
-        let encoded = seal_timestamp(&client_secret, &(&server_secret).into(), ts, &mut rng).expect("seal");
+        let encoded =
+            seal_timestamp(&client_secret, &(&server_secret).into(), ts, &mut rng).expect("seal");
 
         assert_eq!(hex_encode(encoded.nonce), ts_vec.nonce_hex);
-        assert_eq!(hex_encode(encoded.ciphertext.clone()), ts_vec.ciphertext_hex);
+        assert_eq!(
+            hex_encode(encoded.ciphertext.clone()),
+            ts_vec.ciphertext_hex
+        );
         assert_eq!(hex_encode(encoded.ephemeral_pub), ts_vec.ephemeral_hex);
 
-        let opened = open_timestamp(&server_secret, &(&client_secret).into(), &encoded).expect("open");
+        let opened =
+            open_timestamp(&server_secret, &(&client_secret).into(), &encoded).expect("open");
         assert_eq!(opened, ts);
     }
 }
@@ -211,13 +228,21 @@ fn encrypted_timestamps_match_golden_vectors() {
 fn replay_cache_matches_golden_vectors() {
     let vectors = load_vectors();
     for replay_vec in vectors.replay {
-        let mut cache = ReplayCache::new(Duration::from_secs(replay_vec.window_secs), replay_vec.max_entries);
+        let mut cache = ReplayCache::new(
+            Duration::from_secs(replay_vec.window_secs),
+            replay_vec.max_entries,
+        );
         for event in replay_vec.events {
             let ts = SystemTime::UNIX_EPOCH + Duration::from_secs(event.timestamp);
             let payload = hex_decode(&event.payload_hex).unwrap();
             let mac1 = hex_decode(&event.mac1_hex).unwrap();
             let result = cache.check_and_insert(ts, &payload, &mac1);
-            assert_eq!(result.is_ok(), event.accepted, "replay decision mismatch for payload {}", event.payload_hex);
+            assert_eq!(
+                result.is_ok(),
+                event.accepted,
+                "replay decision mismatch for payload {}",
+                event.payload_hex
+            );
         }
     }
 }

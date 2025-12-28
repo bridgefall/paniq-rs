@@ -94,7 +94,8 @@ impl Framer {
         if transport_padding >= 0 {
             let pad_len = transport_padding as usize;
             if datagram.len() >= pad_len + 4 {
-                let type_val = u32::from_le_bytes(datagram[pad_len..pad_len + 4].try_into().unwrap());
+                let type_val =
+                    u32::from_le_bytes(datagram[pad_len..pad_len + 4].try_into().unwrap());
                 if let Some(h) = self.header_for(MessageType::Transport) {
                     if h.validate(type_val) {
                         return Ok((MessageType::Transport, datagram[pad_len + 4..].to_vec()));
