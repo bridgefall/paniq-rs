@@ -13,13 +13,14 @@ blake2 = { version = "0.10" }
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 subtle = "2.5"
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tokio = { version = "1.35", features = ["full"], optional = true }
 quinn = { version = "0.10", optional = true }
 rustls = { version = "0.21", optional = true }
 tracing = { version = "0.1", optional = true }
 async-trait = { version = "0.1", optional = true }
+rcgen = { version = "0.12", optional = true }
 
 [features]
 default = []
@@ -31,3 +32,19 @@ rand_chacha = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rcgen = "0.12"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "socks5d"
+path = "bin/socks5d.rs"
+required-features = ["socks5", "quic", "rcgen"]
+
+[[bin]]
+name = "proxy-server"
+path = "bin/proxy-server.rs"
+required-features = ["quic", "rcgen"]
+
+[[bin]]
+name = "gen_test_cert"
+path = "bin/gen_test_cert.rs"
+required-features = ["rcgen"]

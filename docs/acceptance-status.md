@@ -78,7 +78,7 @@ This file tracks the implementation state of paniq-rs against the phases outline
   - Run with: `rustup run nightly cargo fuzz run main`
 
 ### Medium Priority
-- Implement CLI tools:
+- ~~Implement CLI tools:~~ ✅ Complete
   - `socks5d`: Standalone SOCKS5 daemon binary
   - `proxy-server`: Standalone proxy server binary
 - Add integration tests with packet-loss simulation
