@@ -71,7 +71,7 @@ impl PacketConn for InMemoryConn {
 impl PacketConn for UdpPacketConn {
     fn send(&mut self, data: Vec<u8>) -> Result<(), EnvelopeError> {
         self.sock
-            .send_to(&data, self.peer)
+            .send(&data)
             .map(|_| ())
             .map_err(|_| EnvelopeError::HandshakeTimeout)
     }
