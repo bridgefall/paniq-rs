@@ -319,11 +319,11 @@ rustls = "0.21"
 
 ## Phase 4: SOCKS5 Daemon
 
-### 4.1 SOCKS5 Server (`socks5/server.rs`)
+### 4.1 SOCKS5 Server (`socks5/mod.rs`)
 
-- RFC 1928 implementation
+- RFC 1928 implementation built on the `fast-socks5` parsing/authentication layer
 - Username/password auth (RFC 1929)
-- CONNECT command only
+- CONNECT command only (UDP associate and BIND disabled)
 - Relay over QUIC to proxy server
 
 ### 4.2 Dependencies

@@ -1,12 +1,12 @@
 #![cfg(feature = "quic")]
 
-use std::sync::Arc;
 use paniq::obf::{Config, Framer, SharedRng};
 use paniq::quic::client::connect_after_handshake;
 use paniq::quic::server::listen_on_socket;
 use quinn::ClientConfig;
-use tokio::sync::oneshot;
 use rustls::{Certificate, PrivateKey, RootCertStore};
+use std::sync::Arc;
+use tokio::sync::oneshot;
 
 fn base_config() -> Config {
     Config {
@@ -82,15 +82,15 @@ async fn quic_round_trip_over_obfuscating_socket() {
 
     ready_rx.await.unwrap();
 
-    let conn = connect_after_handshake(
+    let (endpoint, conn) = connect_after_handshake(
         client_sock,
         server_addr,
         client_framer,
         client_config,
         "localhost",
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
 
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
     send.write_all(b"hello-obf-quic").await.unwrap();
@@ -102,4 +102,5 @@ async fn quic_round_trip_over_obfuscating_socket() {
     conn.close(0u32.into(), b"done");
     server_task.await.unwrap();
     drop(conn);
+    drop(endpoint);
 }
