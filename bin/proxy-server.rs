@@ -22,7 +22,7 @@ const PROXY_VERSION: u8 = 0x01;
 const STATUS_SUCCESS: u8 = 0x00;
 const STATUS_FAILURE: u8 = 0x01;
 const ATYP_IPV4: u8 = 0x01;
-const ATYP_DOMAIN: u8 = 0x03;
+
 const ATYP_IPV6: u8 = 0x04;
 
 fn log(msg: &str) {
