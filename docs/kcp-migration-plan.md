@@ -1,7 +1,7 @@
 # KCP Transport Rollout Plan
 
 ## Background
-The target transport layer will rely on kcp-rs paired with smux and the existing obfuscation + envelope framing. Connections perform the handshake before instantiating the KCP session, and both sides wrap UDP datagrams with the same framer used throughout the stack. See `docs/kcp-transport-wrapper.md` for the design sketch.
+The target transport layer will rely on kcp-rs paired with async_smux and the existing obfuscation + envelope framing. Connections perform the handshake before instantiating the KCP session, and both sides wrap UDP datagrams with the same framer used throughout the stack. See `docs/kcp-transport-wrapper.md` for the design sketch.
 
 ## Current Status (2025-12-29)
 
@@ -19,8 +19,9 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
 
 ### Decisions (2025-12-29)
 - Use **kcp-rs** as the KCP engine.
-- Use **smux** for stream multiplexing over the single KCP byte stream.
+- Use **async_smux** for stream multiplexing over the single KCP byte stream.
 - Implement KCP as a thin wrapper layer (no fork) as outlined in `docs/kcp-transport-wrapper.md`.
+- Encode `conv_id` in the envelope handshake response payload (4 bytes, big-endian).
 
 ## Next Steps: Implement Real UDP Transport
 
@@ -36,8 +37,8 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
    - Ensure envelope handshake works over real UDP packets
    - Verify junk packets and signature chains transmit correctly
 
-3. **Add KCP + smux crates + config surface**
-   - Add `kcp-rs` and `smux` to `Cargo.toml`
+3. **Add KCP + async_smux crates + config surface**
+   - Add `kcp-rs` and `async_smux` to `Cargo.toml`
    - Map profile-driven settings (`max_packet_size`, `max_payload`, `keepalive`, `idle_timeout`, `max_streams`) to KCP + smux configs
    - Decide async integration approach (tokio + UDP read/write loops + adapter)
 
@@ -47,10 +48,12 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
    - Perform envelope handshake to establish session context
    - Create KCP conv/conversation for each handshake
    - Define and exchange `conv_id` during handshake; map `(peer_addr, conv_id) → SessionState`
+   - Include `conv_id` in the `MessageType::Response` payload (4 bytes, big-endian)
 
 2. **Client side (`src/kcp/client.rs`)**
    - Perform envelope handshake via UDP (remove `connect_after_handshake` bypass)
-   - Receive/validate `conv_id` from server handshake response
+   - Receive/validate `conv_id` from server handshake response payload
+   - Create `Kcp::new(conv_id)`, then call `initialize()` and pin the instance (required by kcp-rs)
    - Run KCP update loop for sending/receiving (tokio tasks + timers)
 
 3. **Transport framing integration**
@@ -58,13 +61,12 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
    - Use `envelope::transport::{build_transport_payload, decode_transport_payload}`
    - Honor `transport_replay` / counters if enabled in profile
 
-4. **smux integration**
-   - Use `async_smux` as the smux implementation.
-   - Implement a `KcpStreamAdapter` that exposes the KCP byte stream as `futures::io::AsyncRead + AsyncWrite + Unpin + Send`.
-   - Construct `async_smux::Mux::new(adapter, MuxConfig::default())`.
-   - Client: `mux.connect().await` maps to `open_bi()`.
-   - Server: `mux.accept().await` maps to `accept_bi()`.
-   - If the rest of the code uses `tokio::io::AsyncRead/AsyncWrite`, bridge with `tokio_util::compat` (`compat` feature).
+4. **async_smux integration**
+   - Use `async_smux` as the smux implementation (tokio-based `TokioConn` trait).
+   - Implement a `KcpStreamAdapter` that exposes the KCP byte stream as `tokio::io::AsyncRead + AsyncWrite + Unpin`.
+   - Build the mux via `MuxBuilder::client/server().with_connection(adapter).build()`, then spawn the worker task.
+   - Client: `connector.connect()` maps to `open_bi()`.
+   - Server: `acceptor.accept().await` maps to `accept_bi()`.
    - Map `max_streams`, `keepalive`, and `idle_timeout` to the mux config where supported.
    - Create wrapper modules per `docs/kcp-transport-wrapper.md` (e.g., `src/kcp/transport.rs`, `src/kcp/mux.rs`)
 
@@ -75,7 +77,7 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
      3. `decode_transport_payload(payload, expect_counter, replay_check)` → `kcp_bytes`
      4. `kcp.input(&kcp_bytes)` to feed the KCP state machine
    - **Outbound KCP → UDP**
-     1. `while kcp.has_output() { kcp.pop_output() }` → `kcp_bytes`
+     1. `while kcp.has_ouput() { kcp.pop_output() }` → `kcp_bytes` (note: method is spelled `has_ouput` in kcp-rs)
      2. `build_transport_payload(kcp_bytes, counter, padding, max_payload, rng)` → `payload`
      3. `framer.encode_frame(MessageType::Transport, payload)` → `datagram`
      4. `udp.send_to(datagram, peer_addr)`
@@ -100,7 +102,7 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
      kcp.update(now_ms);
 
      // send path
-     while kcp.has_output() {
+     while kcp.has_ouput() {
          let kcp_bytes = kcp.pop_output();
          let payload = build_transport_payload(
              &kcp_bytes,
@@ -135,7 +137,7 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
 
 ### 1) Standardize on kcp-rs + smux primitives
 - Build only with the `kcp` feature set and remove leftover dependencies tied to any prior transport.
-- Add `smux` and the KCP stream adapter to the transport module (no fork).
+- Add `async_smux` and the KCP stream adapter to the transport module (no fork).
 - Map profile-driven transport settings (MTU, payload sizing, keepalive) into the new configuration surface as needed.
 
 ### 2) Preserve obfuscation + envelope handshake
@@ -143,7 +145,7 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
 - Maintain the pre-transport handshake so both peers agree on keys and timing before data transfer.
 
 ### 3) Stream semantics on top of KCP
-- Use **smux** to multiplex logical streams over the single KCP byte stream.
+- Use **async_smux** to multiplex logical streams over the single KCP byte stream.
 - Keep the SOCKS5 request framing identical so daemon and proxy interactions stay compatible.
 
 ### 4) Reliability, congestion, and NAT behavior
@@ -166,11 +168,11 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
 - **NAT/port reuse**: Sessions must survive NAT rebinding; keep UDP sockets stable per connector and detect address changes.
 
 ## Open Questions (with Suggested Defaults)
-1. **Which smux crate API/traits should the adapter target?**
-   - Suggested default: Use `async_smux` and implement `futures::io::AsyncRead + AsyncWrite + Unpin + Send` for the KCP adapter; bridge tokio traits via `tokio_util::compat` if needed.
+1. **Which async_smux version/config surface should we target?**
+   - Suggested default: Use the latest `async_smux` with `MuxBuilder` + `TokioConn`, and implement `tokio::io::AsyncRead + AsyncWrite + Unpin` for the KCP adapter.
 
-2. **How should `conv_id` be generated and exchanged?**
-   - Suggested default: Server-generated 32-bit random `conv_id` (per session) returned in the handshake response payload; key sessions by `(peer_addr, conv_id)` to tolerate NAT rebinding while preventing collisions.
+2. **Confirm `conv_id` generation details (RNG + lifetime).**
+   - Suggested default: Server-generated 32-bit random `conv_id` (per session), encoded in the handshake `Response` payload (big-endian) and keyed by `(peer_addr, conv_id)`.
 
 3. **What is the transport framing contract for KCP datagrams?**
    - Suggested default: Encapsulate each KCP UDP datagram as `MessageType::Transport` with `build_transport_payload`, using counters when `transport_replay` is enabled; keep payload size within `max_payload` to preserve padding headroom.

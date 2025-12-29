@@ -29,8 +29,8 @@ UDP socket
   - Owns UDP socket, handshake, per-session KCP state, timers.
   - Encodes/decodes `MessageType::Transport` frames.
 - `src/kcp/mux.rs` (new)
-  - Lightweight stream mux on top of single KCP session.
-  - Maps `stream_id -> mpsc` or `tokio::io::DuplexStream`.
+  - Wraps `async_smux` session wiring over the single KCP byte stream.
+  - Exposes `open_bi`/`accept_bi` in terms of `MuxConnector`/`MuxAcceptor`.
 - `src/kcp/client.rs` / `src/kcp/server.rs`
   - Thin wrappers that call into `transport`.
 
@@ -42,7 +42,7 @@ UDP socket
 4. `kcp.input(&kcp_bytes)` and `kcp.update(now_ms)`.
 
 **Outbound KCP → UDP**
-1. `while kcp.has_output() { kcp.pop_output() }` → `kcp_bytes`.
+1. `while kcp.has_ouput() { kcp.pop_output() }` → `kcp_bytes` (note: method is spelled `has_ouput` in kcp-rs).
 2. `build_transport_payload(kcp_bytes, counter, padding, max_payload, rng)` → `payload`.
 3. `framer.encode_frame(MessageType::Transport, payload)` → `datagram`.
 4. `send_to(datagram, peer_addr)`.
@@ -50,25 +50,26 @@ UDP socket
 **Handshake Path (Before KCP)**
 - Use `MessageType::{Initiation, CookieReply, Response}` directly over UDP.
 - Only start KCP once the envelope preamble completes and `conv_id` is known.
+- Encode `conv_id` in the `MessageType::Response` payload (4 bytes, big-endian).
 
 ## Session Model
 - Key sessions by `(peer_addr, conv_id)`.
 - Server: `HashMap<(SocketAddr, u32), SessionState>`.
 - SessionState holds:
-  - `kcp: kcp_rs::Kcp`
+  - `kcp: kcp_rs::Kcp` (call `initialize()` and pin after creation)
   - `last_seen`, `next_update`
-  - `mux: smux::Session`
+  - `mux: async_smux::MuxAcceptor` (server) / `async_smux::MuxConnector` (client)
   - `send_queue` (if needed for backpressure)
 
 ## Stream Multiplexing (async_smux)
 - Use `async_smux` to multiplex streams over the single KCP byte stream.
-- Expose KCP as a reliable byte stream (`futures::io::AsyncRead + AsyncWrite + Unpin + Send`) via a small adapter:
+- Expose KCP as a reliable byte stream via a small adapter that implements `tokio::io::AsyncRead + AsyncWrite + Unpin` (matches `async_smux::TokioConn`).
   - `KcpStreamAdapter` reads from the KCP receive buffer and writes via `kcp.send(...)`.
-  - If other layers are `tokio::io`, bridge with `tokio_util::compat` (`compat` feature).
 - Client:
-  - `async_smux::Mux::new(adapter, MuxConfig::default())` + `connect().await` maps to `open_bi()`.
+  - `MuxBuilder::client().with_connection(adapter).build()` + `connector.connect()` maps to `open_bi()`.
 - Server:
-  - `async_smux::Mux::new(adapter, MuxConfig::default())` + `accept().await` maps to `accept_bi()`.
+  - `MuxBuilder::server().with_connection(adapter).build()` + `acceptor.accept().await` maps to `accept_bi()`.
+- Spawn the mux worker future returned by `build()`.
 - Initial SOCKS target request stays the same: written as the first bytes on the accepted stream.
 - Config mapping:
   - `max_streams` → mux config limit.
