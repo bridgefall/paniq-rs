@@ -1,8 +1,8 @@
-//! Integration test for SOCKS5 over obfuscated QUIC
+//! Integration test for SOCKS5 over obfuscated KCP (simulated)
 //! Equivalent to Go's pkg/socks5daemon/integration_quic_test.go
 
 #![cfg(feature = "socks5")]
-#![cfg(feature = "quic")]
+#![cfg(feature = "kcp")]
 
 use async_trait::async_trait;
 use std::net::SocketAddr;
@@ -14,9 +14,9 @@ use tokio::time::{timeout, Duration};
 
 const MAX_END_TO_END_LATENCY: Duration = Duration::from_secs(1);
 
+use paniq::kcp::client::connect_after_handshake;
+use paniq::kcp::server::listen_on_socket;
 use paniq::obf::{Config, Framer, SharedRng};
-use paniq::quic::client::connect_after_handshake;
-use paniq::quic::server::listen_on_socket;
 use paniq::socks5::{AuthConfig, IoStream, RelayConnector, Socks5Server, SocksError, TargetAddr};
 
 fn test_obf_config() -> Config {
@@ -42,47 +42,6 @@ fn test_obf_config() -> Config {
 
 fn make_framer(cfg: &Config, seed: u64) -> Framer {
     Framer::new_with_rng(cfg.clone(), SharedRng::from_seed(seed)).unwrap()
-}
-
-fn get_test_certs() -> (quinn::ServerConfig, quinn::ClientConfig) {
-    use rustls::{Certificate, PrivateKey, RootCertStore};
-
-    let cert = rcgen::generate_simple_self_signed(["paniq".into()]).unwrap();
-    let cert_der = cert.serialize_der().unwrap();
-    let key_der = cert.serialize_private_key_der();
-    let cert = Certificate(cert_der.to_vec());
-    let key = PrivateKey(key_der);
-
-    // Server config
-    let server_crypto = rustls::ServerConfig::builder()
-        .with_safe_defaults()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.clone()], key)
-        .unwrap();
-    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(server_crypto));
-    let mut server_transport = quinn::TransportConfig::default();
-    server_transport.keep_alive_interval(Some(Duration::from_secs(20)));
-    server_transport.max_idle_timeout(Some(Duration::from_secs(120).try_into().unwrap()));
-    server_transport.initial_rtt(Duration::from_millis(10));
-    server_transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(256));
-    server_config.transport_config(Arc::new(server_transport));
-
-    // Client config
-    let mut roots = RootCertStore::empty();
-    roots.add(&cert).unwrap();
-    let client_crypto = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let mut client_config = quinn::ClientConfig::new(Arc::new(client_crypto));
-    let mut client_transport = quinn::TransportConfig::default();
-    client_transport.keep_alive_interval(Some(Duration::from_secs(20)));
-    client_transport.max_idle_timeout(Some(Duration::from_secs(120).try_into().unwrap()));
-    client_transport.initial_rtt(Duration::from_millis(10));
-    client_transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(256));
-    client_config.transport_config(Arc::new(client_transport));
-
-    (server_config, client_config)
 }
 
 /// Simple HTTP server that returns "ok"
@@ -121,7 +80,8 @@ async fn socks5_over_quic_roundtrip() -> Duration {
 
     // Start proxy server
     let server_framer = make_framer(&test_obf_config(), 456);
-    let (server_config, client_config) = get_test_certs();
+    let server_config = ();
+    let client_config = ();
     let server_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let server_addr = server_sock.local_addr().unwrap();
 
@@ -236,7 +196,7 @@ async fn socks5_over_quic_roundtrip() -> Duration {
     let client_framer = make_framer(&test_obf_config(), 123);
     let client_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
 
-    let (endpoint, quinn_conn) = connect_after_handshake(
+    let (_endpoint, quinn_conn) = connect_after_handshake(
         client_sock,
         server_addr,
         client_framer,
@@ -248,7 +208,6 @@ async fn socks5_over_quic_roundtrip() -> Duration {
 
     let connector = TestQuicConnector {
         conn: Arc::new(tokio::sync::Mutex::new(quinn_conn)),
-        _endpoint: Arc::new(endpoint),
     };
 
     let mut users = std::collections::HashMap::new();
@@ -355,8 +314,7 @@ async fn socks5_over_quic_roundtrip() -> Duration {
 
 // Test QUIC connector for SOCKS5 - similar to the one in socks5d.rs
 struct TestQuicConnector {
-    conn: Arc<tokio::sync::Mutex<quinn::Connection>>,
-    _endpoint: Arc<quinn::Endpoint>,
+    conn: Arc<tokio::sync::Mutex<paniq::kcp::client::Connection>>,
 }
 
 impl TestQuicConnector {
@@ -413,12 +371,15 @@ impl RelayConnector for TestQuicConnector {
 }
 
 struct TestBiStreamWrapper {
-    send: Option<quinn::SendStream>,
-    recv: quinn::RecvStream,
+    send: Option<paniq::kcp::client::SendStream>,
+    recv: paniq::kcp::client::RecvStream,
 }
 
 impl TestBiStreamWrapper {
-    fn new(send: quinn::SendStream, recv: quinn::RecvStream) -> Self {
+    fn new(
+        send: paniq::kcp::client::SendStream,
+        recv: paniq::kcp::client::RecvStream,
+    ) -> Self {
         Self {
             send: Some(send),
             recv,

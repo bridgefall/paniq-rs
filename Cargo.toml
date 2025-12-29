@@ -16,36 +16,34 @@ subtle = "2.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.35", features = ["full"], optional = true }
-quinn = { version = "0.10", optional = true }
-rustls = { version = "0.21", optional = true }
 tracing = { version = "0.1", optional = true }
 async-trait = { version = "0.1", optional = true }
-rcgen = { version = "0.12", optional = true }
+once_cell = "1.19"
 fast-socks5 = "0.10.0"
 
 [features]
 default = []
-quic = ["quinn", "rustls", "tokio", "tracing"]
+kcp = ["tokio", "tracing"]
 socks5 = ["tokio", "async-trait"]
 
 [dev-dependencies]
 rand_chacha = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rcgen = "0.12"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1.35", features = ["full"] }
 
 [[bin]]
 name = "socks5d"
 path = "bin/socks5d.rs"
-required-features = ["socks5", "quic", "rcgen"]
+required-features = ["socks5", "kcp"]
 
 [[bin]]
 name = "proxy-server"
 path = "bin/proxy-server.rs"
-required-features = ["quic", "rcgen"]
+required-features = ["kcp"]
 
 [[bin]]
 name = "gen_test_cert"
 path = "bin/gen_test_cert.rs"
-required-features = ["rcgen"]
+required-features = []

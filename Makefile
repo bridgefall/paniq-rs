@@ -3,11 +3,11 @@
 
 # Variables
 CARGO := cargo
-FEATURES_QUIC := quic
+FEATURES_QUIC := kcp
 FEATURES_SOCKS5 := socks5
-FEATURES_RCGEN := rcgen
-FEATURES_ALL := quic socks5 rcgen
-FEATURES_FULL := --features "quic,socks5,rcgen"
+FEATURES_RCGEN :=
+FEATURES_ALL := kcp socks5
+FEATURES_FULL := --features "kcp,socks5"
 
 # Binaries
 BIN_PROXY_SERVER := proxy-server
@@ -54,18 +54,18 @@ build-release:
 
 .PHONY: $(BIN_PROXY_SERVER)
 $(BIN_PROXY_SERVER):
-	@echo "$(COLOR_GREEN)Building $(BIN_PROXY_SERVER)...$(COLOR_RESET)"
-	$(CARGO) build --bin $(BIN_PROXY_SERVER) --features "quic,rcgen"
+        @echo "$(COLOR_GREEN)Building $(BIN_PROXY_SERVER)...$(COLOR_RESET)"
+        $(CARGO) build --bin $(BIN_PROXY_SERVER) --features "kcp"
 
 .PHONY: $(BIN_SOCKS5D)
 $(BIN_SOCKS5D):
-	@echo "$(COLOR_GREEN)Building $(BIN_SOCKS5D)...$(COLOR_RESET)"
-	$(CARGO) build --bin $(BIN_SOCKS5D) --features "socks5,quic,rcgen"
+        @echo "$(COLOR_GREEN)Building $(BIN_SOCKS5D)...$(COLOR_RESET)"
+        $(CARGO) build --bin $(BIN_SOCKS5D) --features "socks5,kcp"
 
 .PHONY: $(BIN_GEN_CERT)
 $(BIN_GEN_CERT):
-	@echo "$(COLOR_GREEN)Building $(BIN_GEN_CERT)...$(COLOR_RESET)"
-	$(CARGO) build --bin $(BIN_GEN_CERT) --features "rcgen"
+        @echo "$(COLOR_GREEN)Building $(BIN_GEN_CERT)...$(COLOR_RESET)"
+        $(CARGO) build --bin $(BIN_GEN_CERT)
 
 ## ============================================================================
 ## Test Targets
@@ -87,19 +87,14 @@ test-all:
 	@echo "$(COLOR_BLUE)Running all tests...$(COLOR_RESET)"
 	$(CARGO) test --all-targets $(FEATURES_FULL)
 
-# QUIC-specific tests
+# KCP-specific tests
 .PHONY: test-quic
-test-quic: test-roundtrip test-handshake
+test-quic: test-roundtrip
 
 .PHONY: test-roundtrip
 test-roundtrip:
-	@echo "$(COLOR_BLUE)Running QUIC roundtrip test...$(COLOR_RESET)"
-	$(CARGO) test --test quic_roundtrip --features "quic,rcgen" $(TEST_ROUNDTRIP)
-
-.PHONY: test-handshake
-test-handshake:
-	@echo "$(COLOR_BLUE)Running QUIC handshake test...$(COLOR_RESET)"
-	$(CARGO) test --test quic_handshake --features "quic,rcgen"
+        @echo "$(COLOR_BLUE)Running KCP roundtrip test...$(COLOR_RESET)"
+        $(CARGO) test --test quic_roundtrip --features "kcp" $(TEST_ROUNDTRIP)
 
 # SOCKS5 integration tests
 .PHONY: test-socks5
@@ -107,13 +102,13 @@ test-socks5: test-socks5-quic test-socks5-realistic
 
 .PHONY: test-socks5-quic
 test-socks5-quic:
-	@echo "$(COLOR_BLUE)Running SOCKS5 QUIC integration test...$(COLOR_RESET)"
-	$(CARGO) test --test $(TEST_INTEGRATION_QUIC) --features "socks5,quic,rcgen"
+        @echo "$(COLOR_BLUE)Running SOCKS5 KCP integration test...$(COLOR_RESET)"
+        $(CARGO) test --test $(TEST_INTEGRATION_QUIC) --features "socks5,kcp"
 
 .PHONY: test-socks5-realistic
 test-socks5-realistic:
-	@echo "$(COLOR_BLUE)Running SOCKS5 realistic integration test...$(COLOR_RESET)"
-	$(CARGO) test --test $(TEST_INTEGRATION_REALISTIC) --features "socks5,quic,rcgen"
+        @echo "$(COLOR_BLUE)Running SOCKS5 realistic integration test...$(COLOR_RESET)"
+        $(CARGO) test --test $(TEST_INTEGRATION_REALISTIC) --features "socks5,kcp"
 
 # Other tests
 .PHONY: test-golden
@@ -123,18 +118,18 @@ test-golden:
 
 .PHONY: test-parity
 test-parity:
-	@echo "$(COLOR_BLUE)Running Go parity test...$(COLOR_RESET)"
-	$(CARGO) test --test $(TEST_PARITY) --features "quic,rcgen"
+        @echo "$(COLOR_BLUE)Running Go parity test...$(COLOR_RESET)"
+        $(CARGO) test --test $(TEST_PARITY) --features "kcp"
 
 # Test with verbose output
 .PHONY: test-verbose
 test-verbose:
-	$(CARGO) test --all-targets $(FEATURES_FULL) -- --nocapture
+        $(CARGO) test --all-targets $(FEATURES_FULL) -- --nocapture
 
 # Test with output
 .PHONY: test-output
 test-output:
-	$(CARGO) test --all-targets $(FEATURES_FULL) -- --show-output
+        $(CARGO) test --all-targets $(FEATURES_FULL) -- --show-output
 
 ## ============================================================================
 ## Development Targets

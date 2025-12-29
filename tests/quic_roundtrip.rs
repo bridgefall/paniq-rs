@@ -1,11 +1,8 @@
-#![cfg(feature = "quic")]
+#![cfg(feature = "kcp")]
 
+use paniq::kcp::client::connect_after_handshake;
+use paniq::kcp::server::listen_on_socket;
 use paniq::obf::{Config, Framer, SharedRng};
-use paniq::quic::client::connect_after_handshake;
-use paniq::quic::server::listen_on_socket;
-use quinn::ClientConfig;
-use rustls::{Certificate, PrivateKey, RootCertStore};
-use std::sync::Arc;
 use tokio::sync::oneshot;
 
 fn base_config() -> Config {
@@ -33,31 +30,12 @@ fn make_framer(cfg: &Config, seed: u64) -> Framer {
     Framer::new_with_rng(cfg.clone(), SharedRng::from_seed(seed)).unwrap()
 }
 
-fn make_server_config() -> (quinn::ServerConfig, Certificate) {
-    let cert = rcgen::generate_simple_self_signed(["localhost".into(), "paniq".into()]).unwrap();
-    let cert_der = cert.serialize_der().unwrap();
-    let key = PrivateKey(cert.serialize_private_key_der());
-    let cert = Certificate(cert_der);
-    let server_config = quinn::ServerConfig::with_single_cert(vec![cert.clone()], key).unwrap();
-    (server_config, cert)
-}
-
-fn make_client_config(ca: &Certificate) -> ClientConfig {
-    let mut roots = RootCertStore::empty();
-    roots.add(ca).unwrap();
-    let client_crypto = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    ClientConfig::new(Arc::new(client_crypto))
-}
-
 #[tokio::test]
 async fn quic_round_trip_over_obfuscating_socket() {
     let cfg = base_config();
     let client_framer = make_framer(&cfg, 123);
-    let (server_config, ca) = make_server_config();
-    let client_config = make_client_config(&ca);
+    let server_config = ();
+    let client_config = ();
 
     let client_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let server_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
