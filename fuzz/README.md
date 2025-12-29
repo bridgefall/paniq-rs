@@ -2,7 +2,7 @@
 
 This directory contains fuzz targets for the paniq-rs library using `cargo-fuzz`.
 
-## Quick Start
+## Getting Started
 
 Run fuzz using rustup:
 ```bash

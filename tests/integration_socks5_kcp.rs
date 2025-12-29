@@ -1,5 +1,5 @@
 //! Integration test for SOCKS5 over obfuscated KCP (simulated)
-//! Equivalent to Go's pkg/socks5daemon/integration_quic_test.go
+//! Equivalent to Go's pkg/socks5daemon/integration_kcp_test.go
 
 #![cfg(feature = "socks5")]
 #![cfg(feature = "kcp")]
@@ -18,6 +18,7 @@ use paniq::kcp::client::connect_after_handshake;
 use paniq::kcp::server::listen_on_socket;
 use paniq::obf::{Config, Framer, SharedRng};
 use paniq::socks5::{AuthConfig, IoStream, RelayConnector, Socks5Server, SocksError, TargetAddr};
+use tokio::sync::oneshot;
 
 fn test_obf_config() -> Config {
     Config {
@@ -71,7 +72,7 @@ async fn start_http_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     (addr, handle)
 }
 
-async fn socks5_over_quic_roundtrip() -> Duration {
+async fn socks5_over_kcp_roundtrip() -> Duration {
     // Enable logging (ok if already initialized)
     let _ = tracing_subscriber::fmt::try_init();
 
@@ -85,13 +86,17 @@ async fn socks5_over_quic_roundtrip() -> Duration {
     let server_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let server_addr = server_sock.local_addr().unwrap();
 
+    let (ready_tx, ready_rx) = oneshot::channel();
+
     let server_task = tokio::spawn(async move {
         let endpoint = listen_on_socket(server_sock, server_framer, server_config)
             .await
             .unwrap();
 
+        let _ = ready_tx.send(());
+
         while let Some(incoming) = endpoint.accept().await {
-            if let Ok(conn) = incoming.await {
+            if let Ok(conn) = incoming.await_connection().await {
                 tokio::spawn(async move {
                     while let Ok((mut send, mut recv)) = conn.accept_bi().await {
                         tokio::spawn(async move {
@@ -140,35 +145,38 @@ async fn socks5_over_quic_roundtrip() -> Duration {
                             };
 
                             // Connect to target
-                            let mut target_stream = match tokio::net::TcpStream::connect(&target_str).await {
-                                Ok(s) => s,
-                                Err(_) => return,
-                            };
+                            let mut target_stream =
+                                match tokio::net::TcpStream::connect(&target_str).await {
+                                    Ok(s) => s,
+                                    Err(_) => return,
+                                };
 
                             // Relay bidirectionally - both directions run concurrently
                             let (mut target_read, mut target_write) = target_stream.split();
                             let mut recv_buf = vec![0u8; 8192];
                             let mut send_buf = vec![0u8; 8192];
 
-                            // QUIC → Target (client_to_target)
+                            // KCP → Target (client_to_target)
                             let client_to_target = async {
                                 loop {
-                                    let n_opt = recv.read(&mut recv_buf).await.map_err(|_| ())?;
-                                    match n_opt {
-                                        Some(0) | None => break, // EOF
-                                        Some(n) => {
-                                            target_write.write_all(&recv_buf[..n]).await.map_err(|_| ())?;
-                                        }
+                                    let n = recv.read(&mut recv_buf).await.map_err(|_| ())?;
+                                    if n == 0 {
+                                        break; // EOF
                                     }
+                                    target_write
+                                        .write_all(&recv_buf[..n])
+                                        .await
+                                        .map_err(|_| ())?;
                                 }
                                 drop(target_write);
                                 Ok::<(), ()>(())
                             };
 
-                            // Target → QUIC (target_to_client)
+                            // Target → KCP (target_to_client)
                             let target_to_client = async {
                                 loop {
-                                    let n = target_read.read(&mut send_buf).await.map_err(|_| ())?;
+                                    let n =
+                                        target_read.read(&mut send_buf).await.map_err(|_| ())?;
                                     if n == 0 {
                                         break; // EOF from target
                                     }
@@ -177,9 +185,8 @@ async fn socks5_over_quic_roundtrip() -> Duration {
                                 }
                                 // Flush buffered data before finishing
                                 let _ = send.flush().await;
-                                // Finish the QUIC send stream gracefully
-                                // This can complete because client_to_target is still running concurrently
-                                let _ = send.finish().await;
+                                // Gracefully shutdown the send half; client_to_target continues until it drains
+                                let _ = send.shutdown().await;
                                 Ok::<(), ()>(())
                             };
 
@@ -192,11 +199,13 @@ async fn socks5_over_quic_roundtrip() -> Duration {
         }
     });
 
+    ready_rx.await.unwrap();
+
     // Start SOCKS5 server
     let client_framer = make_framer(&test_obf_config(), 123);
     let client_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
 
-    let (_endpoint, quinn_conn) = connect_after_handshake(
+    let (_endpoint, kcp_conn) = connect_after_handshake(
         client_sock,
         server_addr,
         client_framer,
@@ -206,8 +215,8 @@ async fn socks5_over_quic_roundtrip() -> Duration {
     .await
     .unwrap();
 
-    let connector = TestQuicConnector {
-        conn: Arc::new(tokio::sync::Mutex::new(quinn_conn)),
+    let connector = TestKcpConnector {
+        conn: Arc::new(tokio::sync::Mutex::new(kcp_conn)),
     };
 
     let mut users = std::collections::HashMap::new();
@@ -312,12 +321,12 @@ async fn socks5_over_quic_roundtrip() -> Duration {
     elapsed
 }
 
-// Test QUIC connector for SOCKS5 - similar to the one in socks5d.rs
-struct TestQuicConnector {
+// Test KCP connector for SOCKS5 - similar to the one in socks5d.rs
+struct TestKcpConnector {
     conn: Arc<tokio::sync::Mutex<paniq::kcp::client::Connection>>,
 }
 
-impl TestQuicConnector {
+impl TestKcpConnector {
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, String> {
         let conn = self.conn.lock().await;
 
@@ -362,7 +371,7 @@ impl TestQuicConnector {
 }
 
 #[async_trait]
-impl RelayConnector for TestQuicConnector {
+impl RelayConnector for TestKcpConnector {
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, SocksError> {
         self.connect(target)
             .await
@@ -376,10 +385,7 @@ struct TestBiStreamWrapper {
 }
 
 impl TestBiStreamWrapper {
-    fn new(
-        send: paniq::kcp::client::SendStream,
-        recv: paniq::kcp::client::RecvStream,
-    ) -> Self {
+    fn new(send: paniq::kcp::client::SendStream, recv: paniq::kcp::client::RecvStream) -> Self {
         Self {
             send: Some(send),
             recv,
@@ -436,20 +442,20 @@ impl tokio::io::AsyncWrite for TestBiStreamWrapper {
 }
 
 #[tokio::test]
-async fn integration_socks5_over_quic() {
-    let _elapsed = socks5_over_quic_roundtrip().await;
+async fn integration_socks5_over_kcp() {
+    let _elapsed = socks5_over_kcp_roundtrip().await;
 }
 
 #[tokio::test]
-async fn soak_socks5_over_quic_30s() {
+async fn soak_socks5_over_kcp_30s() {
     // Warm up once to avoid startup noise skewing the soak run
-    let _ = socks5_over_quic_roundtrip().await;
+    let _ = socks5_over_kcp_roundtrip().await;
 
     let start = Instant::now();
     let mut iterations = 0usize;
 
     while start.elapsed() < Duration::from_secs(30) {
-        let elapsed = socks5_over_quic_roundtrip().await;
+        let elapsed = socks5_over_kcp_roundtrip().await;
         assert!(
             elapsed < MAX_END_TO_END_LATENCY,
             "Iteration latency too high: {:?}",
@@ -457,7 +463,7 @@ async fn soak_socks5_over_quic_30s() {
         );
         iterations += 1;
         if iterations % 10 == 0 {
-             println!("Soak iteration {}", iterations);
+            println!("Soak iteration {}", iterations);
         }
     }
 

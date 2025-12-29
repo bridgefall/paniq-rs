@@ -3,7 +3,7 @@
 
 # Variables
 CARGO := cargo
-FEATURES_QUIC := kcp
+FEATURES_KCP := kcp
 FEATURES_SOCKS5 := socks5
 FEATURES_RCGEN :=
 FEATURES_ALL := kcp socks5
@@ -16,9 +16,8 @@ BIN_GEN_CERT := gen_test_cert
 BINS := $(BIN_PROXY_SERVER) $(BIN_SOCKS5D) $(BIN_GEN_CERT)
 
 # Test names
-TEST_ROUNDTRIP := quic_round_trip_over_obfuscating_socket
-TEST_HANDSHAKE := quic_handshake
-TEST_INTEGRATION_QUIC := integration_socks5_quic
+TEST_ROUNDTRIP := kcp_round_trip_over_obfuscating_socket
+TEST_INTEGRATION_KCP := integration_socks5_kcp
 TEST_INTEGRATION_REALISTIC := integration_socks5_realistic
 TEST_GOLDEN := golden_vectors
 TEST_PARITY := go_parity
@@ -80,7 +79,7 @@ test-unit:
 	$(CARGO) test --lib
 
 .PHONY: test-integration
-test-integration: test-quic test-socks5
+test-integration: test-kcp test-socks5
 
 .PHONY: test-all
 test-all:
@@ -88,22 +87,22 @@ test-all:
 	$(CARGO) test --all-targets $(FEATURES_FULL)
 
 # KCP-specific tests
-.PHONY: test-quic
-test-quic: test-roundtrip
+.PHONY: test-kcp
+test-kcp: test-roundtrip
 
 .PHONY: test-roundtrip
 test-roundtrip:
         @echo "$(COLOR_BLUE)Running KCP roundtrip test...$(COLOR_RESET)"
-        $(CARGO) test --test quic_roundtrip --features "kcp" $(TEST_ROUNDTRIP)
+        $(CARGO) test --test kcp_roundtrip --features "kcp" $(TEST_ROUNDTRIP)
 
 # SOCKS5 integration tests
 .PHONY: test-socks5
-test-socks5: test-socks5-quic test-socks5-realistic
+test-socks5: test-socks5-kcp test-socks5-realistic
 
-.PHONY: test-socks5-quic
-test-socks5-quic:
+.PHONY: test-socks5-kcp
+test-socks5-kcp:
         @echo "$(COLOR_BLUE)Running SOCKS5 KCP integration test...$(COLOR_RESET)"
-        $(CARGO) test --test $(TEST_INTEGRATION_QUIC) --features "socks5,kcp"
+        $(CARGO) test --test $(TEST_INTEGRATION_KCP) --features "socks5,kcp"
 
 .PHONY: test-socks5-realistic
 test-socks5-realistic:
@@ -192,15 +191,14 @@ help:
 	@echo "  make test-integration   - Run integration tests only"
 	@echo "  make test-all           - Run all tests with all features"
 	@echo ""
-	@echo "  $(COLOR_YELLOW)QUIC Tests:$(COLOR_RESET)"
-	@echo "  make test-quic          - Run all QUIC tests"
-	@echo "  make test-roundtrip     - Run QUIC roundtrip test"
-	@echo "  make test-handshake     - Run QUIC handshake test"
-	@echo ""
-	@echo "  $(COLOR_YELLOW)SOCKS5 Tests:$(COLOR_RESET)"
-	@echo "  make test-socks5        - Run all SOCKS5 tests"
-	@echo "  make test-socks5-quic   - Run SOCKS5 QUIC integration test"
-	@echo "  make test-socks5-realistic - Run SOCKS5 realistic integration test"
+        @echo "  $(COLOR_YELLOW)KCP Tests:$(COLOR_RESET)"
+        @echo "  make test-kcp           - Run all KCP tests"
+        @echo "  make test-roundtrip     - Run KCP roundtrip test"
+        @echo ""
+        @echo "  $(COLOR_YELLOW)SOCKS5 Tests:$(COLOR_RESET)"
+        @echo "  make test-socks5        - Run all SOCKS5 tests"
+        @echo "  make test-socks5-kcp    - Run SOCKS5 KCP integration test"
+        @echo "  make test-socks5-realistic - Run SOCKS5 realistic integration test"
 	@echo ""
 	@echo "$(COLOR_GREEN)Development:$(COLOR_RESET)"
 	@echo "  make fmt                - Format code"
@@ -239,13 +237,9 @@ install-debug: build
 ## Feature-Specific Builds
 ## ============================================================================
 
-.PHONY: build-quic
-build-quic:
-	$(CARGO) build --features "quic,rcgen"
-
 .PHONY: build-socks5
 build-socks5:
-	$(CARGO) build --features "socks5,quic,rcgen"
+        $(CARGO) build --features "socks5,kcp,rcgen"
 
 ## ============================================================================
 ## Watch/Development Helpers

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -11,7 +11,7 @@ use paniq::profile::Profile;
 use paniq::socks5::{AuthConfig, IoStream, RelayConnector, Socks5Server, SocksError, TargetAddr};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = parse_args()?;
     let profile = Profile::from_file(&args.profile)?;
     let obf_config = profile.obf_config();
@@ -19,16 +19,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let server_addr = profile.proxy_addr.parse()?;
     let client_sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
-    let (_ep, conn) = connect_after_handshake(client_sock, server_addr, framer, (), "paniq").await?;
+    let (_ep, conn) =
+        connect_after_handshake(client_sock, server_addr, framer, (), "paniq").await?;
     let connector = KcpConnector { conn };
 
-    let auth = args.auth.map(|(user, pass)| {
-        let mut users = std::collections::HashMap::new();
-        users.insert(user, pass);
-        AuthConfig { users }
-    }).unwrap_or_default();
+    let auth = args
+        .auth
+        .map(|(user, pass)| {
+            let mut users = std::collections::HashMap::new();
+            users.insert(user, pass);
+            AuthConfig { users }
+        })
+        .unwrap_or_default();
 
-    let server = Socks5Server::new(connector, auth);
+    let server = Arc::new(Socks5Server::new(connector, auth));
     let listener = TcpListener::bind(&args.listen_addr).await?;
     loop {
         let (stream, addr) = listener.accept().await?;
@@ -73,24 +77,45 @@ struct KcpConnector {
 impl RelayConnector for KcpConnector {
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, SocksError> {
         let mut buf = Vec::new();
-        match target {
+        buf.push(0x01); // protocol version
+
+        let port = match target {
             TargetAddr::Ip(addr) => {
-                buf.push(0x01);
-                buf.extend_from_slice(&addr.ip().to_string().as_bytes());
-                buf.push(0);
-                buf.extend_from_slice(&addr.port().to_be_bytes());
+                match addr.ip() {
+                    std::net::IpAddr::V4(ipv4) => {
+                        buf.push(0x01); // IPv4
+                        buf.extend_from_slice(&ipv4.octets());
+                    }
+                    std::net::IpAddr::V6(ipv6) => {
+                        buf.push(0x04); // IPv6
+                        buf.extend_from_slice(&ipv6.octets());
+                    }
+                }
+
+                addr.port()
             }
             TargetAddr::Domain(host, port) => {
-                buf.push(0x03);
+                buf.push(0x03); // Domain
                 buf.push(host.len() as u8);
                 buf.extend_from_slice(host.as_bytes());
-                buf.extend_from_slice(&port.to_be_bytes());
+                *port
             }
-        }
+        };
 
-        let (mut send, recv) = self.conn.open_bi().await.map_err(|e| SocksError::Connector(e.to_string()))?;
-        send.write_all(&buf).await.map_err(|e| SocksError::Connector(e.to_string()))?;
-        Ok(Box::new(StreamWrapper { send: Some(send), recv }))
+        buf.extend_from_slice(&port.to_be_bytes());
+
+        let (mut send, recv) = self
+            .conn
+            .open_bi()
+            .await
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        send.write_all(&buf)
+            .await
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        Ok(Box::new(StreamWrapper {
+            send: Some(send),
+            recv,
+        }))
     }
 }
 
@@ -98,8 +123,6 @@ struct StreamWrapper {
     send: Option<paniq::kcp::client::SendStream>,
     recv: paniq::kcp::client::RecvStream,
 }
-
-impl IoStream for StreamWrapper {}
 
 impl AsyncRead for StreamWrapper {
     fn poll_read(

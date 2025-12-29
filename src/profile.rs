@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::obf::Config as ObfConfig;
 
-/// Profile configuration containing proxy address, QUIC settings, and obfuscation
+/// Profile configuration containing proxy address, KCP settings, and obfuscation
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Profile {
     pub name: String,
@@ -28,7 +28,7 @@ pub struct Profile {
     pub preamble_jitter_ms: Option<u64>,
 
     #[serde(default)]
-    pub quic: Option<QuicConfig>,
+    pub kcp: Option<KcpConfig>,
 
     #[serde(default)]
     pub transport_padding: Option<TransportPadding>,
@@ -42,7 +42,7 @@ fn default_handshake_attempts() -> usize {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct QuicConfig {
+pub struct KcpConfig {
     #[serde(default = "default_max_packet_size")]
     pub max_packet_size: usize,
 
@@ -69,10 +69,6 @@ fn default_max_payload() -> usize {
 }
 fn default_max_streams() -> usize {
     256
-}
-#[allow(dead_code)]
-fn default_duration() -> Duration {
-    Duration::from_secs(30)
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -255,14 +251,19 @@ impl ObfuscationConfig {
 
 impl Profile {
     /// Load profile from a JSON file
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let content = fs::read_to_string(path)?;
         let profile: Profile = serde_json::from_str(&content)?;
         Ok(profile)
     }
 
     /// Save profile to a JSON file
-    pub fn to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn to_file<P: AsRef<Path>>(
+        &self,
+        path: P,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let content = serde_json::to_string_pretty(self)?;
         fs::write(path, content)?;
         Ok(())

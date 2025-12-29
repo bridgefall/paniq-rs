@@ -19,7 +19,11 @@ pub struct IncomingConnection {
 }
 
 impl IncomingConnection {
-    pub async fn await(self) -> Result<crate::kcp::client::Connection, KcpServerError> {
+    pub(crate) fn new(inner: crate::kcp::client::Connection) -> Self {
+        Self { inner }
+    }
+
+    pub async fn await_connection(self) -> Result<crate::kcp::client::Connection, KcpServerError> {
         Ok(self.inner)
     }
 }
@@ -54,7 +58,9 @@ pub async fn listen_on_socket(
     _framer: Framer,
     _config: (),
 ) -> Result<Endpoint, KcpServerError> {
-    let addr = sock.local_addr().map_err(|e| KcpServerError::Setup(e.to_string()))?;
+    let addr = sock
+        .local_addr()
+        .map_err(|e| KcpServerError::Setup(e.to_string()))?;
 
     let (tx, rx) = mpsc::channel(8);
     REGISTRY
