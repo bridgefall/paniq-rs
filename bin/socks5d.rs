@@ -21,7 +21,7 @@ const ATYP_IPV4: u8 = 0x01;
 const ATYP_DOMAIN: u8 = 0x03;
 const ATYP_IPV6: u8 = 0x04;
 
-use tracing::{info, error, warn};
+
 
 fn log(msg: &str) {
     let now = std::time::SystemTime::now()

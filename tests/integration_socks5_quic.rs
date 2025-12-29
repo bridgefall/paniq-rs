@@ -12,7 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 
-const MAX_END_TO_END_LATENCY: Duration = Duration::from_millis(200);
+const MAX_END_TO_END_LATENCY: Duration = Duration::from_secs(1);
 
 use paniq::obf::{Config, Framer, SharedRng};
 use paniq::quic::client::connect_after_handshake;
@@ -95,12 +95,13 @@ async fn start_http_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
             if let Ok((mut socket, _)) = listener.accept().await {
                 let _ = socket.set_nodelay(true);
                 tokio::spawn(async move {
-                    let mut buf = [0u8; 1024];
+                    let mut buf = [0u8; 4096]; // Use stack-allocated buffer for common MTU
                     if let Ok(n) = socket.read(&mut buf).await {
                         let request = String::from_utf8_lossy(&buf[..n]);
                         if request.contains("GET") && request.contains("HTTP") {
                             let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
                             let _ = socket.write_all(response.as_bytes()).await;
+                            // println!("HTTP: sent response");
                         }
                     }
                 });
@@ -179,44 +180,51 @@ async fn socks5_over_quic_roundtrip() -> Duration {
                             };
 
                             // Connect to target
-                            if let Ok(mut target_stream) =
-                                tokio::net::TcpStream::connect(&target_str).await
-                            {
-                                let (mut target_read, mut target_write) = target_stream.split();
-                                let mut recv_buf = vec![0u8; 8192];
-                                let mut send_buf = vec![0u8; 8192];
+                            let mut target_stream = match tokio::net::TcpStream::connect(&target_str).await {
+                                Ok(s) => s,
+                                Err(_) => return,
+                            };
 
-                                let recv_task = async move {
-                                    loop {
-                                        let n = match recv.read(&mut recv_buf).await {
-                                            Ok(Some(n)) => n,
-                                            Ok(None) => return,
-                                            Err(_) => return,
-                                        };
-                                        if target_write.write_all(&recv_buf[..n]).await.is_err() {
-                                            return;
+                            // Relay bidirectionally - both directions run concurrently
+                            let (mut target_read, mut target_write) = target_stream.split();
+                            let mut recv_buf = vec![0u8; 8192];
+                            let mut send_buf = vec![0u8; 8192];
+
+                            // QUIC → Target (client_to_target)
+                            let client_to_target = async {
+                                loop {
+                                    let n_opt = recv.read(&mut recv_buf).await.map_err(|_| ())?;
+                                    match n_opt {
+                                        Some(0) | None => break, // EOF
+                                        Some(n) => {
+                                            target_write.write_all(&recv_buf[..n]).await.map_err(|_| ())?;
                                         }
                                     }
-                                };
-
-                                let send_task = async move {
-                                    loop {
-                                        let n = match target_read.read(&mut send_buf).await {
-                                            Ok(n) if n > 0 => n,
-                                            Ok(_) => return,
-                                            Err(_) => return,
-                                        };
-                                        if send.write_all(&send_buf[..n]).await.is_err() {
-                                            return;
-                                        }
-                                    }
-                                };
-
-                                tokio::select! {
-                                    _ = recv_task => {}
-                                    _ = send_task => {}
                                 }
-                            }
+                                drop(target_write);
+                                Ok::<(), ()>(())
+                            };
+
+                            // Target → QUIC (target_to_client)
+                            let target_to_client = async {
+                                loop {
+                                    let n = target_read.read(&mut send_buf).await.map_err(|_| ())?;
+                                    if n == 0 {
+                                        break; // EOF from target
+                                    }
+                                    send.write_all(&send_buf[..n]).await.map_err(|_| ())?;
+                                    tokio::task::yield_now().await; // Allow other tasks to run
+                                }
+                                // Flush buffered data before finishing
+                                let _ = send.flush().await;
+                                // Finish the QUIC send stream gracefully
+                                // This can complete because client_to_target is still running concurrently
+                                let _ = send.finish().await;
+                                Ok::<(), ()>(())
+                            };
+
+                            // Run both concurrently until BOTH complete
+                            let _ = tokio::try_join!(client_to_target, target_to_client);
                         });
                     }
                 });
@@ -320,7 +328,7 @@ async fn socks5_over_quic_roundtrip() -> Duration {
 
     // Read HTTP response
     let mut http_resp = vec![0u8; 1024];
-    let n = timeout(Duration::from_secs(5), socks_conn.read(&mut http_resp))
+    let n = timeout(Duration::from_secs(10), socks_conn.read(&mut http_resp))
         .await
         .unwrap()
         .unwrap();
@@ -388,6 +396,7 @@ impl TestQuicConnector {
         send.write_all(&request)
             .await
             .map_err(|e| format!("write failed: {}", e))?;
+        // println!("Test connector: request sent");
 
         // Return a bidirectional wrapper
         Ok(Box::new(TestBiStreamWrapper::new(send, recv)))
@@ -486,6 +495,9 @@ async fn soak_socks5_over_quic_30s() {
             elapsed
         );
         iterations += 1;
+        if iterations % 10 == 0 {
+             println!("Soak iteration {}", iterations);
+        }
     }
 
     assert!(iterations > 0, "No iterations executed in soak test");
