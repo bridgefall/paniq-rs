@@ -60,19 +60,19 @@ UDP socket
   - `mux: smux::Session`
   - `send_queue` (if needed for backpressure)
 
-## Stream Multiplexing (smux)
-- Use `smux` to multiplex streams over the single KCP byte stream.
-- Expose KCP as a reliable byte stream (`AsyncRead`/`AsyncWrite`) via a small adapter:
-  - `KcpStreamAdapter` reads from KCP receive buffer and writes via `kcp.send(...)`.
-  - Adapter type should match the async traits that `smux` expects; use a compat shim if needed.
+## Stream Multiplexing (async_smux)
+- Use `async_smux` to multiplex streams over the single KCP byte stream.
+- Expose KCP as a reliable byte stream (`futures::io::AsyncRead + AsyncWrite + Unpin + Send`) via a small adapter:
+  - `KcpStreamAdapter` reads from the KCP receive buffer and writes via `kcp.send(...)`.
+  - If other layers are `tokio::io`, bridge with `tokio_util::compat` (`compat` feature).
 - Client:
-  - `smux::Session::new_client(kcp_stream, config)` → `open_stream()` maps to `open_bi()`.
+  - `async_smux::Mux::new(adapter, MuxConfig::default())` + `connect().await` maps to `open_bi()`.
 - Server:
-  - `smux::Session::new_server(kcp_stream, config)` → `accept_stream()` maps to `accept_bi()`.
+  - `async_smux::Mux::new(adapter, MuxConfig::default())` + `accept().await` maps to `accept_bi()`.
 - Initial SOCKS target request stays the same: written as the first bytes on the accepted stream.
 - Config mapping:
-  - `max_streams` → `smux` session config limit.
-  - `keepalive` / `idle_timeout` → smux keepalive/idle settings (align with profile).
+  - `max_streams` → mux config limit.
+  - `keepalive` / `idle_timeout` → mux keepalive/idle settings (align with profile).
 
 ## Integration Touchpoints
 - `bin/socks5d.rs`: use `kcp::client::connect` (with handshake) and keep `open_bi`.

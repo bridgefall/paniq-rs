@@ -59,10 +59,13 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
    - Honor `transport_replay` / counters if enabled in profile
 
 4. **smux integration**
-   - Implement a `KcpStreamAdapter` that exposes the KCP byte stream as `AsyncRead`/`AsyncWrite`
-   - Client: `smux::Session::new_client(adapter, config)`; map `open_bi()` → `open_stream()`
-   - Server: `smux::Session::new_server(adapter, config)`; map `accept_bi()` → `accept_stream()`
-   - Map `max_streams`, `keepalive`, and `idle_timeout` to smux settings
+   - Use `async_smux` as the smux implementation.
+   - Implement a `KcpStreamAdapter` that exposes the KCP byte stream as `futures::io::AsyncRead + AsyncWrite + Unpin + Send`.
+   - Construct `async_smux::Mux::new(adapter, MuxConfig::default())`.
+   - Client: `mux.connect().await` maps to `open_bi()`.
+   - Server: `mux.accept().await` maps to `accept_bi()`.
+   - If the rest of the code uses `tokio::io::AsyncRead/AsyncWrite`, bridge with `tokio_util::compat` (`compat` feature).
+   - Map `max_streams`, `keepalive`, and `idle_timeout` to the mux config where supported.
    - Create wrapper modules per `docs/kcp-transport-wrapper.md` (e.g., `src/kcp/transport.rs`, `src/kcp/mux.rs`)
 
 5. **Per-packet I/O flow with kcp-rs (sketch)**
@@ -164,7 +167,7 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
 
 ## Open Questions (with Suggested Defaults)
 1. **Which smux crate API/traits should the adapter target?**
-   - Suggested default: Use a tokio-friendly `smux` crate and implement `AsyncRead`/`AsyncWrite` for the KCP adapter; if needed, use a compat shim rather than forking.
+   - Suggested default: Use `async_smux` and implement `futures::io::AsyncRead + AsyncWrite + Unpin + Send` for the KCP adapter; bridge tokio traits via `tokio_util::compat` if needed.
 
 2. **How should `conv_id` be generated and exchanged?**
    - Suggested default: Server-generated 32-bit random `conv_id` (per session) returned in the handshake response payload; key sessions by `(peer_addr, conv_id)` to tolerate NAT rebinding while preventing collisions.
@@ -180,5 +183,5 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
 
 ## Definition of Done
 - The KCP transport is the only path for SOCKS5 daemon and proxy binaries.
-- Integration and soak suites remain green against the local HTTP target.
+- Integration and soak suites operate over UDP and remain green against the local HTTP target.
 - Documentation reflects the single-transport design and the implemented behavior.
