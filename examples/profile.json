@@ -5,7 +5,7 @@
   "handshake_attempts": 3,
   "preamble_delay_ms": 5,
   "preamble_jitter_ms": 5,
-  "quic": {
+  "kcp": {
     "max_packet_size": 1350,
     "max_payload": 1200,
     "keepalive": "20s",

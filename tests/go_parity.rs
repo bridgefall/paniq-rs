@@ -8,6 +8,18 @@ use paniq::obf::parse_chain;
 fn go_rust_chain_parity_smoke() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
+    // Skip if Go toolchain or module is unavailable in this environment.
+    if Command::new("go").arg("version").output().is_err() {
+        eprintln!("skipping go parity test: go toolchain unavailable");
+        return;
+    }
+
+    let go_project_root = manifest_dir.join("_reference/paniq");
+    if !go_project_root.join("go.mod").exists() {
+        eprintln!("skipping go parity test: go.mod not present in _reference/paniq");
+        return;
+    }
+
     let cases = [
         ("<b 0x0102><d>", b"hello".as_ref()),
         ("<d>", b"paniq".as_ref()),
@@ -28,7 +40,7 @@ fn go_rust_chain_parity_smoke() {
                 "--input",
                 &encode(input),
             ])
-            .current_dir(manifest_dir.join("_reference/paniq"))
+            .current_dir(&go_project_root)
             .output()
             .expect("spawn go run");
 

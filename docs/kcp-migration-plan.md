@@ -1,48 +1,47 @@
-# Migration Plan: Direct Replacement of QUIC (quinn) with kcp-rs
+# KCP Transport Rollout Plan
 
 ## Background
-- The current QUIC transport built on Quinn is broken, so integration coverage does not pass. The goal is to remove Quinn entirely and bring the system back to green by wiring kcp-rs directly into the existing obfuscation/envelope layers. `connect` performs the handshake before transport initialization, and `FramedUdpSocket` applies the envelope framing. Server setup mirrors this flow on the bound UDP socket. 【F:src/quic/client.rs†L26-L200】【F:src/quic/server.rs†L17-L38】
-- Integration and soak coverage exercise a local SOCKS5 → transport proxy path that forwards to an in-process HTTP server. The soak test stresses the pipeline for 30 seconds by repeatedly issuing HTTP GETs against that local server and must continue to do so post-migration. 【F:tests/integration_socks5_quic.rs†L115-L220】【F:tests/integration_socks5_quic.rs†L477-L503】
+The transport layer now relies exclusively on kcp-rs paired with the existing obfuscation and envelope framing. Connections perform the handshake before instantiating the transport session, and both sides wrap the UDP socket with the same framer used throughout the stack.
 
 ## Goals and Acceptance Criteria
-1. Rip out Quinn and land a KCP-based transport that preserves the existing obfuscation/envelope handshake without any dual-stack migration path.
-2. Keep the public SOCKS5 daemon and proxy binaries functionally equivalent (same request/response semantics and authentication surface).
-3. Restore green status for `integration_socks5_over_quic` and the 30-second soak test using the KCP-based transport. The soak test must continue to issue HTTP requests against the local test server to avoid external dependencies. 【F:tests/integration_socks5_quic.rs†L115-L220】【F:tests/integration_socks5_quic.rs†L477-L503】
+1. Keep the SOCKS5 daemon and proxy binaries functionally equivalent while using KCP for every transport hop.
+2. Maintain the existing handshake and framing so higher-level protocols remain compatible.
+3. Ensure integration and soak coverage stay green while running fully on the new transport.
 
 ## Migration Steps
 
-### 1) Replace Quinn transport primitives with kcp-rs
-- Add the `kcp` crate (or the kcp-rs fork used internally) and remove Quinn dependencies from the transport layer entirely so the build uses KCP by default.
-- Map profile-driven transport settings (MTU, window sizes, resend/interval timers) to the KCP configuration so latency targets stay aligned with prior tuning.
+### 1) Standardize on kcp-rs primitives
+- Build only with the `kcp` feature set and remove leftover dependencies tied to any prior transport.
+- Map profile-driven transport settings (MTU, payload sizing, keepalive) into the new configuration surface as needed.
 
 ### 2) Preserve obfuscation + envelope handshake
-- Reuse `UdpPacketConn` and `Framer` to run the current initiation handshake before constructing a KCP session, mirroring how `connect` stages the handshake before transport setup. 【F:src/quic/client.rs†L26-L80】
-- Wrap the UDP socket with the same framed adapter so the obfuscation layer continues to encode/decode transport datagrams before KCP consumes them. Replace `FramedUdpSocket`’s Quinn `AsyncUdpSocket` impl with a thin adapter that feeds bytes into `kcp::Kcp`’s `input`/`recv` APIs.
+- Keep using the current framer around the UDP socket to encode/decode datagrams before KCP consumes them.
+- Maintain the pre-transport handshake so both peers agree on keys and timing before data transfer.
 
-### 3) Redefine stream semantics on top of KCP
-- KCP is message-oriented and single-stream; emulate bidirectional streams used by `open_bi` by multiplexing logical channels over a single KCP session (length-prefixed frames carrying stream IDs) or by instantiating one KCP session per SOCKS connection.
-- Update the SOCKS5 connector and proxy server loops to use the KCP session abstraction instead of Quinn `Connection`/`SendStream`/`RecvStream`, while keeping the request framing unchanged so the higher-level protocol remains compatible. 【F:tests/integration_socks5_quic.rs†L133-L220】
+### 3) Stream semantics on top of KCP
+- Use framed messages to carry stream identifiers and requests over the single KCP session.
+- Keep the SOCKS5 request framing identical so daemon and proxy interactions stay compatible.
 
 ### 4) Reliability, congestion, and NAT behavior
-- Configure KCP timers (interval, nodelay, resend, window) to approximate prior latency budgets while respecting the MTU enforced by the obfuscation framing.
-- Ensure the UDP socket stays non-blocking with explicit read/write readiness similar to `FramedUdpSocket`, and add metrics/logging to observe RTT/fast-resend behavior during soak runs.
-- Implement keepalive/idle handling equivalent to the current 120s idle window; send periodic KCP probes instead of QUIC keepalives.
+- Tune KCP timers and window sizes to respect MTU and latency expectations imposed by the obfuscation layer.
+- Keep sockets non-blocking with explicit readiness handling and add metrics to watch RTT and resend behavior during soak runs.
+- Implement keepalive/idle handling equivalent to the previous 120s idle window using KCP probes.
 
 ### 5) Testing and soak adaptations
-- Port `socks5_over_quic_roundtrip` and the soak harness to instantiate the KCP-backed connector/server, removing Quinn from test setup. Keep the local HTTP server used in the current tests as the target to avoid network variance and satisfy soak requirements. 【F:tests/integration_socks5_quic.rs†L115-L220】【F:tests/integration_socks5_quic.rs†L477-L503】
-- Add targeted tests for KCP session restart and loss recovery (e.g., packet drop simulation) to ensure the new transport handles edge cases and documents any divergence from the Quinn design (e.g., single-stream multiplexing costs).
-- Use the Makefile’s curated targets for deterministic validation while porting: `make test` for unit + integration coverage, `make test-socks5-realistic` to exercise the local HTTP server path, and `make test-all` once KCP replaces Quinn across all binaries and features.
+- Run the SOCKS5 integration and 30-second soak tests against the KCP-backed connector and server using the local HTTP target to avoid external variance.
+- Add focused tests for session restart and loss recovery to document behavior under drop or reorder scenarios.
+- Use the Makefile targets (`make test`, `make test-socks5-realistic`, `make test-all`) to verify coverage while iterating.
 
 ### 6) Execution and rollout
-- Remove the Quinn dependency and ship KCP as the only supported transport. If a temporary escape hatch is required, keep a minimal behind-the-scenes feature flag solely for debugging; do not expose dual stacks to users.
-- Harden the metrics/observability story during the soak run to catch regressions early because there is no migration fallback.
+- Ship KCP as the only supported transport path in the binaries.
+- Harden observability during soak runs to catch regressions early since no alternate transport remains.
 
 ## Risks and Mitigations
-- **Stream multiplexing complexity**: KCP lacks native bidi streams; mitigate by adding a simple stream ID framing layer and benchmarking it in the soak test.
-- **Congestion window tuning**: Misconfigured KCP parameters can inflate latency. Capture metrics during soak to tune `nodelay`, window sizes, and resend thresholds.
-- **NAT/port reuse**: KCP sessions must survive NAT rebinding. Mirror Quinn’s socket lifecycle by reusing a bound UDP socket per connector and detecting address changes.
+- **Stream multiplexing complexity**: Framed stream identifiers add a small overhead; benchmark during soak to confirm no regression.
+- **Congestion window tuning**: Misconfigured parameters can inflate latency; record metrics while adjusting `nodelay`, window sizes, and resend thresholds.
+- **NAT/port reuse**: Sessions must survive NAT rebinding; keep UDP sockets stable per connector and detect address changes.
 
 ## Definition of Done
-- Quinn code paths are removed or disabled from production builds; KCP transport is the only path for SOCKS5 daemon and proxy binaries.
-- `integration_socks5_over_quic` and `soak_socks5_over_quic_30s` pass using the KCP-backed transport and the local HTTP target.
-- Documentation updated (this file) to reflect the single-path design and any deviations encountered during implementation and testing.
+- The KCP transport is the only path for SOCKS5 daemon and proxy binaries.
+- Integration and soak suites remain green against the local HTTP target.
+- Documentation reflects the single-transport design and the implemented behavior.

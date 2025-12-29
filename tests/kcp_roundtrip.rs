@@ -3,6 +3,7 @@
 use paniq::kcp::client::connect_after_handshake;
 use paniq::kcp::server::listen_on_socket;
 use paniq::obf::{Config, Framer, SharedRng};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
 
 fn base_config() -> Config {
@@ -31,7 +32,7 @@ fn make_framer(cfg: &Config, seed: u64) -> Framer {
 }
 
 #[tokio::test]
-async fn quic_round_trip_over_obfuscating_socket() {
+async fn kcp_round_trip_over_obfuscating_socket() {
     let cfg = base_config();
     let client_framer = make_framer(&cfg, 123);
     let server_config = ();
@@ -41,20 +42,20 @@ async fn quic_round_trip_over_obfuscating_socket() {
     let server_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let server_addr = server_sock.local_addr().unwrap();
 
-    let server_quic_framer = make_framer(&cfg, 456);
+    let server_kcp_framer = make_framer(&cfg, 456);
     let (ready_tx, ready_rx) = oneshot::channel();
     let server_task = tokio::spawn(async move {
-        let server_ep = listen_on_socket(server_sock, server_quic_framer, server_config)
+        let server_ep = listen_on_socket(server_sock, server_kcp_framer, server_config)
             .await
             .unwrap();
         let _ = ready_tx.send(());
         if let Some(incoming) = server_ep.accept().await {
-            let connection = incoming.await.unwrap();
+            let connection = incoming.await_connection().await.unwrap();
             let (mut send, mut recv) = connection.accept_bi().await.unwrap();
             let mut buf = vec![0u8; 64];
-            let n = recv.read(&mut buf).await.unwrap().unwrap();
+            let n = recv.read(&mut buf).await.unwrap();
             send.write_all(&buf[..n]).await.unwrap();
-            send.finish().await.unwrap();
+            send.shutdown().await.unwrap();
         }
     });
 
@@ -71,11 +72,15 @@ async fn quic_round_trip_over_obfuscating_socket() {
     .unwrap();
 
     let (mut send, mut recv) = conn.open_bi().await.unwrap();
-    send.write_all(b"hello-obf-quic").await.unwrap();
-    send.finish().await.unwrap();
+    send.write_all(b"hello-obf-kcp").await.unwrap();
+    send.shutdown().await.unwrap();
 
-    let echoed = recv.read_to_end(usize::MAX).await.unwrap();
-    assert_eq!(echoed, b"hello-obf-quic");
+    let echoed = {
+        let mut buf = Vec::new();
+        recv.read_to_end(&mut buf).await.unwrap();
+        buf
+    };
+    assert_eq!(echoed, b"hello-obf-kcp");
 
     conn.close(0u32.into(), b"done");
     server_task.await.unwrap();

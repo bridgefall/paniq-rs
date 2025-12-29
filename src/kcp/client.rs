@@ -3,9 +3,7 @@ use std::sync::Arc;
 
 use rand::thread_rng;
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::io::{DuplexStream, ReadHalf, WriteHalf};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 
@@ -36,8 +34,8 @@ pub struct Connection {
 impl Connection {
     pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), KcpError> {
         let (a, b) = tokio::io::duplex(16 * 1024);
-        let (client_send, client_recv) = tokio::io::split(a);
-        let (server_send, server_recv) = tokio::io::split(b);
+        let (client_recv, client_send) = tokio::io::split(a);
+        let (server_recv, server_send) = tokio::io::split(b);
         self.outbound
             .send((server_send, server_recv))
             .await
@@ -96,13 +94,15 @@ pub async fn connect_after_handshake(
     socket
         .set_nonblocking(true)
         .map_err(|e| KcpError::Setup(e.to_string()))?;
-    let mut registry = REGISTRY
-        .lock()
-        .map_err(|e| KcpError::Setup(e.to_string()))?;
-    let incoming = registry
-        .get(&server_addr)
-        .cloned()
-        .ok_or_else(|| KcpError::Connection("server not listening".into()))?;
+    let incoming = {
+        let registry = REGISTRY
+            .lock()
+            .map_err(|e| KcpError::Setup(e.to_string()))?;
+        registry
+            .get(&server_addr)
+            .cloned()
+            .ok_or_else(|| KcpError::Connection("server not listening".into()))?
+    };
 
     let (client_tx, server_rx) = mpsc::channel(8);
     let (server_tx, client_rx) = mpsc::channel(8);
@@ -117,7 +117,7 @@ pub async fn connect_after_handshake(
     };
 
     incoming
-        .send(crate::kcp::server::IncomingConnection { inner: server_conn })
+        .send(crate::kcp::server::IncomingConnection::new(server_conn))
         .await
         .map_err(|e| KcpError::Connection(e.to_string()))?;
 
