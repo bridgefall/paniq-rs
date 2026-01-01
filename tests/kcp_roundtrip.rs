@@ -1,10 +1,9 @@
 #![cfg(feature = "kcp")]
 
-use paniq::kcp::client::connect_after_handshake;
-use paniq::kcp::server::listen_on_socket;
+use paniq::kcp::server::listen;
+use paniq::kcp::transport::KcpClient;
 use paniq::obf::{Config, Framer, SharedRng};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::oneshot;
 
 fn base_config() -> Config {
     Config {
@@ -35,55 +34,85 @@ fn make_framer(cfg: &Config, seed: u64) -> Framer {
 async fn kcp_round_trip_over_obfuscating_socket() {
     let cfg = base_config();
     let client_framer = make_framer(&cfg, 123);
-    let server_config = ();
-    let client_config = ();
+    let server_framer = make_framer(&cfg, 456);
 
-    let client_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let server_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let server_addr = server_sock.local_addr().unwrap();
+    let server_config = paniq::kcp::server::ServerConfigWrapper {
+        max_packet_size: 1350,
+        max_payload: 1200,
+        transport_replay: false,
+        idle_timeout_secs: 120,
+        handshake_timeout_secs: 5,
+        handshake_attempts: 3,
+        preamble_delay_ms: 5,
+    };
 
-    let server_kcp_framer = make_framer(&cfg, 456);
-    let (ready_tx, ready_rx) = oneshot::channel();
+    let client_config = paniq::kcp::transport::ClientConfig {
+        max_packet_size: 1350,
+        max_payload: 1200,
+        transport_replay: false,
+        padding_policy: paniq::envelope::padding::PaddingPolicy {
+            enabled: false,
+            min: 0,
+            max: 0,
+            burst_min: 0,
+            burst_max: 0,
+            burst_prob: 0.0,
+        },
+        handshake_timeout: std::time::Duration::from_secs(5),
+        handshake_attempts: 3,
+        preamble_delay: std::time::Duration::from_millis(5),
+    };
+
+    // Use a known port
+    let known_addr: std::net::SocketAddr = "127.0.0.1:12987".parse().unwrap();
+
+    // Start server
     let server_task = tokio::spawn(async move {
-        let server_ep = listen_on_socket(server_sock, server_kcp_framer, server_config)
+        let server_ep = listen(known_addr, server_framer, server_config)
             .await
             .unwrap();
-        let _ = ready_tx.send(());
+        eprintln!("Server listening on {}", server_ep.local_addr());
         if let Some(incoming) = server_ep.accept().await {
-            let connection = incoming.await_connection().await.unwrap();
+            eprintln!("Server accepted connection");
+            let mut connection = incoming.await_connection().await.unwrap();
             let (mut send, mut recv) = connection.accept_bi().await.unwrap();
             let mut buf = vec![0u8; 64];
             let n = recv.read(&mut buf).await.unwrap();
+            eprintln!("Server read {} bytes: {:?}", n, &buf[..n]);
             send.write_all(&buf[..n]).await.unwrap();
             send.shutdown().await.unwrap();
+            eprintln!("Server echoed data");
         }
     });
 
-    ready_rx.await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    let (endpoint, conn) = connect_after_handshake(
-        client_sock,
-        server_addr,
+    // Connect client using KcpClient::connect (which creates its own socket)
+    let client = KcpClient::connect(
+        known_addr,
         client_framer,
+        SharedRng::from_entropy(),
         client_config,
-        "localhost",
     )
     .await
     .unwrap();
 
-    let (mut send, mut recv) = conn.open_bi().await.unwrap();
-    send.write_all(b"hello-obf-kcp").await.unwrap();
-    send.shutdown().await.unwrap();
+    let mut stream = client.open_stream().await.unwrap();
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    eprintln!("Test: opened stream and split");
+    writer.write_all(b"hello-obf-kcp").await.unwrap();
+    eprintln!("Test: wrote data");
+    writer.shutdown().await.unwrap();
+    eprintln!("Test: shutdown writer");
 
     let echoed = {
         let mut buf = Vec::new();
-        recv.read_to_end(&mut buf).await.unwrap();
+        reader.read_to_end(&mut buf).await.unwrap();
+        eprintln!("Test: read {} bytes: {:?}", buf.len(), buf);
         buf
     };
     assert_eq!(echoed, b"hello-obf-kcp");
 
-    conn.close(0u32.into(), b"done");
+    // No close method on KcpClient currently
     server_task.await.unwrap();
-    drop(conn);
-    drop(endpoint);
 }

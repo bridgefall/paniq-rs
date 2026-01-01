@@ -61,6 +61,11 @@ impl Framer {
         self.cfg.clone()
     }
 
+    /// Get the shared RNG used by this framer.
+    pub fn rng(&self) -> &SharedRng {
+        &self.rng
+    }
+
     pub fn encode_frame(
         &self,
         msg_type: MessageType,

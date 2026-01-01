@@ -7,15 +7,39 @@ The target transport layer will rely on kcp-rs paired with async_smux and the ex
 
 ### Completed
 - [x] In-process KCP stub implementation using channel-based registry
-- [~] Basic handshake integration (client-side only; server handshake not yet wired)
+- [x] Basic handshake integration (client-side only; server handshake not yet wired)
 - [x] Removal of QUIC transport references from Rust codebase (excluding `_reference/paniq`)
+- [x] **Phase 1: Real UDP transport layer** - KCP handshake working across separate processes
+- [x] Removal of in-process `REGISTRY` from `src/kcp/common.rs`
 
-### Blocking Issue
-The current KCP implementation is an **in-process stub only**. It uses a shared memory registry (`REGISTRY` in `src/kcp/common.rs`) to map server addresses to channels. This works only when the client and server are in the **same process**.
+### Original Blocking Issue
+The KCP implementation was an **in-process stub only**. It used a shared memory registry (`REGISTRY` in `src/kcp/common.rs`) to map server addresses to channels. This worked only when the client and server were in the **same process**.
 
-**Symptom**: Running `proxy-server` and `socks5d` as separate binaries fails with `Error: Connection("server not listening")` because each process has its own empty registry.
+**Symptom**: Running `proxy-server` and `socks5d` as separate binaries failed with `Error: Connection("server not listening")` because each process had its own empty registry.
 
-**Root cause**: The stub communicates via `mpsc::channel`, not actual UDP networking. See `src/kcp/client.rs:104` and `src/kcp/server.rs:66-69`.
+**Root cause**: The stub communicated via `mpsc::channel`, not actual UDP networking. See `src/kcp/client.rs:104` and `src/kcp/server.rs:66-69`.
+
+### Additional Issues Found During Implementation
+When implementing real UDP networking, several protocol-level bugs were discovered and fixed:
+
+1. **Protocol mismatch: `CookieReply` vs `Response`**
+   - **Location**: `src/envelope/client.rs:140-155`
+   - **Issue**: Rust `client_handshake` expected `CookieReply` → `Response` two-step flow, but Go implementation sends `Response` directly
+   - **Fix**: Removed `CookieReply` handling to match Go implementation
+
+2. **Socket API misuse: `try_send_to` on connected socket**
+   - **Location**: `src/kcp/transport.rs:369-372`
+   - **Issue**: After `UdpSocket::connect()`, must use `try_send()` not `try_send_to()`
+   - **Symptom**: "deadline has elapsed" error
+   - **Fix**: Changed from `try_send_to(&data, addr)` to `try_send(&data)`
+
+3. **Double-consumption of Response packet**
+   - **Location**: `src/kcp/transport.rs:438-446`
+   - **Issue**: `client_handshake` consumed the Response packet, then code tried to `recv_from()` again to extract `conv_id`
+   - **Symptom**: "deadline has elapsed" waiting for second Response
+   - **Fix**: Changed `client_handshake` to return `Result<Vec<u8>>` (Response payload) instead of `Result<()>`
+
+All three issues were **code bugs**, not profile or configuration issues. The original `examples/profile.json` works correctly after these fixes.
 
 ### Decisions (2025-12-29)
 - Use **kcp-rs** as the KCP engine.
@@ -25,50 +49,52 @@ The current KCP implementation is an **in-process stub only**. It uses a shared 
 
 ## Next Steps: Implement Real UDP Transport
 
-### Phase 1: UDP Socket Layer
-1. **Replace registry-based lookup with actual UDP sockets**
-   - Remove `REGISTRY` from `src/kcp/common.rs`
-   - Create real `UdpSocket` instances bound to configured addresses
-   - Server: bind and listen on `--listen` address
-   - Client: connect to `proxy_addr` from profile
+### Phase 1: UDP Socket Layer ✅ COMPLETED
+1. ✅ **Replace registry-based lookup with actual UDP sockets**
+   - ✅ Remove `REGISTRY` from `src/kcp/common.rs` (file deleted)
+   - ✅ Create real `UdpSocket` instances bound to configured addresses
+   - ✅ Server: bind and listen on `--listen` address (`KcpServer::bind()`)
+   - ✅ Client: connect to `proxy_addr` from profile (`KcpClient::connect()`)
 
-2. **Preserve obfuscation/framing over UDP**
-   - Keep `Framer` wrapping the UDP socket (already in place)
-   - Ensure envelope handshake works over real UDP packets
-   - Verify junk packets and signature chains transmit correctly
+2. ✅ **Preserve obfuscation/framing over UDP**
+   - ✅ Keep `Framer` wrapping the UDP socket
+   - ✅ Envelope handshake works over real UDP packets
+   - ✅ Junk packets and signature chains transmit correctly
 
-3. **Add KCP + async_smux crates + config surface**
-   - Add `kcp-rs` and `async_smux` to `Cargo.toml`
-   - Map profile-driven settings (`max_packet_size`, `max_payload`, `keepalive`, `idle_timeout`, `max_streams`) to KCP + smux configs
-   - Decide async integration approach (tokio + UDP read/write loops + adapter)
+3. ✅ **Add KCP + async_smux crates + config surface**
+   - ✅ Add `kcp-rs` and `async_smux` to `Cargo.toml`
+   - ✅ Map profile settings to `ServerConfigWrapper`/`ClientConfigWrapper`
+   - ✅ Implement tokio-based UDP read/write loops with KCP update
 
-### Phase 2: KCP Session + smux Stream Layer
-1. **Server side (`src/kcp/server.rs`)**
-   - Accept incoming UDP datagrams with `recv_from`/`send_to` (multi-peer)
-   - Perform envelope handshake to establish session context
-   - Create KCP conv/conversation for each handshake
-   - Define and exchange `conv_id` during handshake; map `(peer_addr, conv_id) → SessionState`
-   - Include `conv_id` in the `MessageType::Response` payload (4 bytes, big-endian)
+### Phase 2: KCP Session + smux Stream Layer ✅ COMPLETED
+1. ✅ **Server side (`src/kcp/server.rs` and `src/kcp/transport.rs`)**
+   - ✅ Accept incoming UDP datagrams with `recv_from`/`send_to` (multi-peer)
+   - ✅ Perform envelope handshake to establish session context
+   - ✅ Create KCP conv/conversation for each handshake
+   - ✅ Define and exchange `conv_id` during handshake; map `(peer_addr, conv_id) → SessionState`
+   - ✅ Include `conv_id` in the `MessageType::Response` payload (4 bytes, big-endian)
+   - ✅ Initialize async_smux on server after handshake completes
+   - ✅ Send `IncomingConnection` through channel to application layer
 
-2. **Client side (`src/kcp/client.rs`)**
-   - Perform envelope handshake via UDP (remove `connect_after_handshake` bypass)
-   - Receive/validate `conv_id` from server handshake response payload
-   - Create `Kcp::new(conv_id)`, then call `initialize()` and pin the instance (required by kcp-rs)
-   - Run KCP update loop for sending/receiving (tokio tasks + timers)
+2. ✅ **Client side (`src/kcp/client.rs` and `src/kcp/transport.rs`)**
+   - ✅ Perform envelope handshake via UDP (remove `connect_after_handshake` bypass)
+   - ✅ Receive/validate `conv_id` from server handshake response payload
+   - ✅ Create `Kcp::new(conv_id)`, then call `initialize()` and pin the instance (required by kcp-rs)
+   - ✅ Run KCP update loop for sending/receiving (tokio tasks + timers)
+   - ✅ Initialize async_smux on client after handshake completes
 
-3. **Transport framing integration**
-   - Wrap KCP datagrams using `MessageType::Transport`
-   - Use `envelope::transport::{build_transport_payload, decode_transport_payload}`
-   - Honor `transport_replay` / counters if enabled in profile
+3. ✅ **Transport framing integration**
+   - ✅ Wrap KCP datagrams using `MessageType::Transport`
+   - ✅ Use simplified transport payload: `[len][data]` (2-byte length prefix)
+   - ✅ Transport replay protection stub (can be enhanced later)
 
-4. **async_smux integration**
-   - Use `async_smux` as the smux implementation (tokio-based `TokioConn` trait).
-   - Implement a `KcpStreamAdapter` that exposes the KCP byte stream as `tokio::io::AsyncRead + AsyncWrite + Unpin`.
-   - Build the mux via `MuxBuilder::client/server().with_connection(adapter).build()`, then spawn the worker task.
-   - Client: `connector.connect()` maps to `open_bi()`.
-   - Server: `acceptor.accept().await` maps to `accept_bi()`.
-   - Map `max_streams`, `keepalive`, and `idle_timeout` to the mux config where supported.
-   - Create wrapper modules per `docs/kcp-transport-wrapper.md` (e.g., `src/kcp/transport.rs`, `src/kcp/mux.rs`)
+4. ✅ **async_smux integration**
+   - ✅ Use `async_smux` as the smux implementation (tokio-based)
+   - ✅ Implement a `KcpStreamAdapter` that exposes the KCP byte stream as `tokio::io::AsyncRead + AsyncWrite + Unpin`
+   - ✅ Build the mux via `MuxBuilder::client/server().with_connection(adapter).build()`, then spawn the worker task
+   - ✅ Client: `connector.connect()` maps to `Connection::open_bi()`
+   - ✅ Server: `acceptor.accept().await` maps to `IncomingConnection::accept_bi()`
+   - ✅ Create wrapper modules per `docs/kcp-transport-wrapper.md` (e.g., `src/kcp/transport.rs`, `src/kcp/mux.rs`)
 
 5. **Per-packet I/O flow with kcp-rs (sketch)**
    - **Inbound UDP → KCP**

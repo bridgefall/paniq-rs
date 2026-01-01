@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use paniq::kcp::client::connect_after_handshake;
+use paniq::kcp::client::connect;
+use paniq::kcp::client::ClientConfigWrapper;
 use paniq::obf::Framer;
 use paniq::profile::Profile;
 use paniq::socks5::{AuthConfig, IoStream, RelayConnector, Socks5Server, SocksError, TargetAddr};
@@ -18,9 +18,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let framer = Framer::new(obf_config.clone()).expect("framer");
 
     let server_addr = profile.proxy_addr.parse()?;
-    let client_sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
-    let (_ep, conn) =
-        connect_after_handshake(client_sock, server_addr, framer, (), "paniq").await?;
+
+    // Map profile config to client config
+    let config = ClientConfigWrapper {
+        max_packet_size: profile.kcp.as_ref().map(|k| k.max_packet_size).unwrap_or(1350),
+        max_payload: profile.kcp.as_ref().map(|k| k.max_payload).unwrap_or(1200),
+        transport_replay: profile.obfuscation.transport_replay,
+        handshake_timeout_secs: 5,
+        handshake_attempts: 3,
+        preamble_delay_ms: 5,
+    };
+
+    let (_ep, conn) = connect(
+        std::net::UdpSocket::bind("0.0.0.0:0")?,
+        server_addr,
+        framer,
+        config,
+        &[],
+        "paniq",
+    )
+    .await?;
+
     let connector = KcpConnector { conn };
 
     let auth = args
@@ -34,6 +52,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let server = Arc::new(Socks5Server::new(connector, auth));
     let listener = TcpListener::bind(&args.listen_addr).await?;
+
+    eprintln!("SOCKS5 daemon listening on {}", args.listen_addr);
+    eprintln!("Connected to proxy server at {}", server_addr);
+
     loop {
         let (stream, addr) = listener.accept().await?;
         let server = server.clone();
@@ -73,7 +95,7 @@ struct KcpConnector {
     conn: paniq::kcp::client::Connection,
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl RelayConnector for KcpConnector {
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, SocksError> {
         let mut buf = Vec::new();
@@ -112,15 +134,12 @@ impl RelayConnector for KcpConnector {
         send.write_all(&buf)
             .await
             .map_err(|e| SocksError::Connector(e.to_string()))?;
-        Ok(Box::new(StreamWrapper {
-            send: Some(send),
-            recv,
-        }))
+        Ok(Box::new(StreamWrapper { send, recv }))
     }
 }
 
 struct StreamWrapper {
-    send: Option<paniq::kcp::client::SendStream>,
+    send: paniq::kcp::client::SendStream,
     recv: paniq::kcp::client::RecvStream,
 }
 
@@ -140,36 +159,20 @@ impl AsyncWrite for StreamWrapper {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
-        if let Some(send) = &mut self.send {
-            std::pin::Pin::new(send).poll_write(cx, buf)
-        } else {
-            std::task::Poll::Ready(Ok(0))
-        }
+        std::pin::Pin::new(&mut self.send).poll_write(cx, buf)
     }
 
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        if let Some(send) = &mut self.send {
-            std::pin::Pin::new(send).poll_flush(cx)
-        } else {
-            std::task::Poll::Ready(Ok(()))
-        }
+        std::pin::Pin::new(&mut self.send).poll_flush(cx)
     }
 
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        if let Some(send) = &mut self.send {
-            let res = std::pin::Pin::new(send).poll_shutdown(cx);
-            if res.is_ready() {
-                self.send = None;
-            }
-            res
-        } else {
-            std::task::Poll::Ready(Ok(()))
-        }
+        std::pin::Pin::new(&mut self.send).poll_shutdown(cx)
     }
 }
