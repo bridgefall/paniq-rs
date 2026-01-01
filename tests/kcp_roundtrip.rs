@@ -102,6 +102,11 @@ async fn kcp_round_trip_over_obfuscating_socket() {
     eprintln!("Test: opened stream and split");
     writer.write_all(b"hello-obf-kcp").await.unwrap();
     eprintln!("Test: wrote data");
+
+    // Give time for data to transit through KCP/UDP
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    eprintln!("Test: after 100ms delay");
+
     writer.shutdown().await.unwrap();
     eprintln!("Test: shutdown writer");
 

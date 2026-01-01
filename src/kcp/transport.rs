@@ -237,21 +237,12 @@ impl KcpServer {
             peer_addr, conv_id
         );
 
-        // Create Response with conv_id (4 bytes big-endian)
-        let response_payload = (conv_id as u32).to_be_bytes().to_vec();
-
-        // Encode and send Response
-        let response = self
-            .framer
-            .encode_frame(MessageType::Response, &response_payload)?;
-        self.socket.send_to(&response, peer_addr).await?;
-
         // Create and pin KCP instance (required by kcp-rs)
         let mut kcp = Box::pin(Kcp::new(conv_id));
         kcp.as_mut().initialize();
         kcp.as_mut().set_mtu(self.config.max_packet_size as u32)?;
         kcp.as_mut().set_nodelay(true, 10, 2, true);
-        kcp.as_mut().set_stream(true); // Match client stream mode
+        kcp.as_mut().set_stream(true);  // Match client stream mode
 
         // Create adapter and channels
         let (adapter, pump_chans, transport_chans) = KcpStreamAdapter::new_adapter();
@@ -314,13 +305,21 @@ impl KcpServer {
             connector,
         };
 
+        // Insert session BEFORE sending Response to avoid race
         self.sessions
             .lock()
             .await
             .insert((peer_addr, conv_id), session);
 
+        // NOW send Response - session is ready to receive data
+        let response_payload = (conv_id as u32).to_be_bytes().to_vec();
+        let response = self
+            .framer
+            .encode_frame(MessageType::Response, &response_payload)?;
+        self.socket.send_to(&response, peer_addr).await?;
+
         info!(
-            "Session established: {} with conv_id={}",
+            "Session established and Response sent: {} with conv_id={}",
             peer_addr, conv_id
         );
 
