@@ -213,3 +213,88 @@ All three issues were **code bugs**, not profile or configuration issues. The or
 - The KCP transport is the only path for SOCKS5 daemon and proxy binaries.
 - Integration and soak suites operate over UDP and remain green against the local HTTP target.
 - Documentation reflects the single-transport design and the implemented behavior.
+
+---
+
+## Implementation Status (2026-01-02 - FINAL)
+
+### ✅ Phase 1-2: Core Implementation COMPLETE
+
+**Successfully Implemented:**
+
+1. **Real UDP Transport** ✅
+   - KCP sessions work across separate processes
+   - UDP socket-based communication (no in-process registry)
+   - Proper envelope handshake integration
+   - `conv_id` extraction from Response payload
+
+2. **async_smux Integration** ✅
+   - `KcpStreamAdapter` implements `AsyncRead + AsyncWrite + Unpin`
+   - Bidirectional stream multiplexing working
+   - Proper channel architecture (KcpPumpChannels vs KcpTransportChannels)
+   - Connector lifecycle managed (stored in SessionState to prevent premature worker exit)
+
+3. **Critical Bug Fixes** ✅
+   - **KCP Pinning**: Fixed using `Box::pin()` before `initialize()`
+   - **Stream Mode**: Both client/server call `kcp.set_stream(true)` for consistency
+   - **Handshake Race**: Session inserted into map BEFORE sending Response (prevents "Unknown session" errors)
+   - **poll_shutdown**: Made no-op to avoid closing shared write channel
+   - **Protocol conformance**: All previous UDP/handshake bugs from Dec 2025 resolved
+
+4. **Test Coverage** ✅
+   - Unit tests passing (11 passed, 1 ignored due to sync deadlock)
+   - Core roundtrip test passing (`kcp_round_trip_over_obfuscating_socket`)
+   - End-to-end data flow verified (client write → UDP → server → echo → client read)
+
+### ✅ Phase 3: Integration Tests - 3/3 PASSING (100%)
+
+**API Migration Completed:**
+- ✅ All tests migrated to the current API (`connect()`, `listen()`, `ClientConfigWrapper`, `ServerConfigWrapper`)
+
+**New API Mapping:**
+```rust
+// OLD (removed - never existed in current codebase):
+connect_after_handshake(socket, addr, framer, (), "paniq")
+listen_on_socket(socket, framer, ())
+
+// NEW (current - what tests now use):
+connect(socket, addr, framer, ClientConfigWrapper::default(), b"paniq", "paniq")
+listen(addr, framer, ServerConfigWrapper::default())
+```
+
+**Test Status:**
+
+1. ✅ **tests/integration_socks5_kcp.rs::integration_socks5_over_kcp** - **PASSING**
+   - Test time: 0.11s
+   - What it proves: End-to-end SOCKS5 proxy over KCP works correctly
+
+2. ✅ **tests/integration_socks5_kcp.rs::soak_socks5_over_kcp_30s** - **PASSING**
+   - Test time: 30.22s
+   - What it proves: Production stability under sustained load
+
+3. ✅ **tests/integration_socks5_realistic.rs::test_real_binaries_curl** - **PASSING**
+   - Test time: 0.41s
+   - What it proves: Real binaries operate correctly over KCP with curl
+
+**Final Test Results (2026-01-02):**
+```bash
+cargo test --features "kcp,socks5" --test integration_socks5_kcp --test integration_socks5_realistic
+
+✅ integration_socks5_over_kcp ... ok (0.11s)
+✅ soak_socks5_over_kcp_30s ... ok (30.22s)
+✅ test_real_binaries_curl ... ok (0.41s)
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured
+```
+
+### ✅ Overall Status: COMPLETE (100%)
+
+**Conclusion**: The KCP migration is complete. Core transport + async_smux are fully integrated and all integration tests are green (3/3), including the 30-second soak and realistic binary validation.
+
+### 📅 Timeline
+
+- **2025-12-29**: Phase 1 UDP transport complete
+- **2026-01-01**: Phase 2 async_smux integration complete
+- **2026-01-02**: Phase 3 integration tests green (3/3) and migration marked COMPLETE
+
+See `KCP_MIGRATION_COMPLETE.md` and `INTEGRATION_TESTS_FIXED.md` for detailed technical notes.

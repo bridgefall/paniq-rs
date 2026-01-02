@@ -15,9 +15,7 @@ use tracing::{debug, error, info, warn};
 use crate::envelope::client::{client_handshake_async, TokioPacketConn};
 use crate::envelope::padding::PaddingPolicy;
 use crate::envelope::transport::{build_transport_payload, decode_transport_payload};
-use crate::kcp::mux::{
-    run_kcp_pump, system_time_ms, KcpPumpChannels, KcpStreamAdapter, KcpTransportChannels,
-};
+use crate::kcp::mux::{run_kcp_pump, system_time_ms, KcpStreamAdapter};
 use crate::obf::{Framer, MessageType, SharedRng};
 
 // Import kcp types - kcp-rs library is named "kcp" internally
@@ -138,10 +136,6 @@ impl KcpServer {
 
     /// Start the server receive loop.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
-        eprintln!(
-            "Server: run loop starting, socket local addr = {:?}",
-            self.socket.local_addr()
-        );
         let mut buf = vec![0u8; 65536];
         let mut update_interval = tokio::time::interval(Duration::from_millis(20));
 
@@ -152,14 +146,11 @@ impl KcpServer {
 
         // Send ready signal AFTER we've entered the loop
         loop {
-            if iter_count < 5 {
-                eprintln!("Server: loop iteration {}, about to recv_from", iter_count);
-            }
+            if iter_count < 5 {}
 
             // Send ready signal on first iteration
             if iter_count == 0 {
                 if let Some(tx) = self.ready_tx.lock().await.take() {
-                    eprintln!("Server: sending ready signal");
                     let _ = tx.send(());
                 }
             }
@@ -171,7 +162,6 @@ impl KcpServer {
                 result = self.socket.recv_from(&mut buf) => {
                     match result {
                         Ok((len, peer_addr)) => {
-                            eprintln!("Server: received {} bytes from {}", len, peer_addr);
                             let datagram = &buf[..len];
 
                             debug!("Server received {} bytes from {}", len, peer_addr);
@@ -190,7 +180,6 @@ impl KcpServer {
                             match msg_type {
                                 MessageType::Initiation => {
                                     // Handle handshake initiation
-                                    eprintln!("Server: Handling handshake initiation from {}", peer_addr);
                                     if let Err(e) = self.handle_handshake_initiation(peer_addr, payload).await {
                                         warn!("Handshake failed from {}: {}", peer_addr, e);
                                     }
@@ -206,7 +195,6 @@ impl KcpServer {
                             }
                         }
                         Err(e) => {
-                            eprintln!("Server: recv_from error: {:?}", e);
                             return Err(e.into());
                         }
                     }
@@ -215,7 +203,6 @@ impl KcpServer {
                 // Periodic KCP update and cleanup
                 _ = update_interval.tick() => {
                     if iter_count <= 5 {
-                        eprintln!("Server: update_interval tick");
                     }
                     self.update_sessions().await;
                 }
@@ -242,7 +229,7 @@ impl KcpServer {
         kcp.as_mut().initialize();
         kcp.as_mut().set_mtu(self.config.max_packet_size as u32)?;
         kcp.as_mut().set_nodelay(true, 10, 2, true);
-        kcp.as_mut().set_stream(true);  // Match client stream mode
+        kcp.as_mut().set_stream(true); // Match client stream mode
 
         // Create adapter and channels
         let (adapter, pump_chans, transport_chans) = KcpStreamAdapter::new_adapter();
@@ -255,9 +242,7 @@ impl KcpServer {
 
         // Spawn the mux worker task
         tokio::spawn(async move {
-            eprintln!("Server: smux worker starting");
             let res = worker.await;
-            eprintln!("Server: smux worker ended: {:?}", res);
             if let Err(e) = res {
                 error!("Smux worker error: {:?}", e);
             }
@@ -265,7 +250,6 @@ impl KcpServer {
 
         // Spawn the KCP pump task
         let pump = tokio::spawn(async move {
-            eprintln!("Server KCP pump starting");
             let res = run_kcp_pump(
                 kcp,
                 pump_chans.input_rx,
@@ -274,7 +258,6 @@ impl KcpServer {
                 pump_chans.output_tx,
             )
             .await;
-            eprintln!("Server KCP pump ended: {:?}", res);
             if let Err(e) = res {
                 error!("KCP pump error: {:?}", e);
             }
@@ -335,11 +318,6 @@ impl KcpServer {
 
     /// Handle a KCP transport packet.
     async fn handle_transport(&self, peer_addr: SocketAddr, payload: Vec<u8>) {
-        eprintln!(
-            "Server: handle_transport received {} bytes from {}",
-            payload.len(),
-            peer_addr
-        );
         // Decode transport payload with counter validation
         let expect_counter = self.config.transport_replay;
         let kcp_bytes = match decode_transport_payload(
@@ -354,7 +332,6 @@ impl KcpServer {
                 return;
             }
         };
-        eprintln!("Server: decoded {} bytes of KCP data", kcp_bytes.len());
 
         // Extract conv_id from KCP packet
         let conv_id = match Kcp::read_conv(&kcp_bytes) {
@@ -469,7 +446,6 @@ async fn udp_send_loop_client(
 ) {
     let mut counter = 0u64;
     while let Some(kcp_bytes) = output_rx.recv().await {
-        eprintln!("Client UDP send loop: received {} bytes from KCP output", kcp_bytes.len());
         // Build transport payload with counter and padding
         let payload = {
             let mut rng_guard = framer.rng().0.lock().unwrap();
@@ -507,13 +483,10 @@ async fn udp_send_loop_client(
         };
 
         // Send to peer
-        eprintln!("Client UDP: about to send {} byte datagram to server", datagram.len());
         if let Err(e) = socket.send(&datagram).await {
-            eprintln!("CLIENT UDP SEND FAILED: {:?}", e);
             error!("Failed to send transport packet: {}", e);
             return;
         }
-        eprintln!("Client UDP: sent {} byte datagram successfully", datagram.len());
     }
     info!("UDP send loop ended for {}", server_addr);
 }
@@ -581,7 +554,6 @@ impl KcpClient {
     pub async fn connect(
         server_addr: SocketAddr,
         framer: Framer,
-        rng: SharedRng,
         config: ClientConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Bind to any available port using tokio socket
@@ -590,8 +562,7 @@ impl KcpClient {
 
         // Perform async handshake using tokio socket
         let mut conn = TokioPacketConn::new(socket, server_addr);
-        let payload =
-            client_handshake_async(&mut conn, &framer, &[], &mut *rng.0.lock().unwrap()).await?;
+        let payload = client_handshake_async(&mut conn, &framer, &[]).await?;
 
         // Extract conv_id from Response payload (4 bytes big-endian)
         if payload.len() < 4 {
@@ -642,10 +613,6 @@ impl KcpClient {
         // Trigger KCP update to ensure it's ready to send/receive
         kcp.as_mut().update(system_time_ms());
         kcp.as_mut().flush();
-        eprintln!(
-            "Client: KCP initialized with stream mode, has_ouput={}",
-            kcp.has_ouput()
-        );
 
         // Build the smux client
         let (connector, acceptor, worker) = async_smux::MuxBuilder::client()

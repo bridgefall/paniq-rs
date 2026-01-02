@@ -9,7 +9,7 @@ use tracing::info;
 
 use crate::envelope::padding::PaddingPolicy;
 use crate::kcp::mux::KcpStreamAdapter;
-use crate::kcp::transport::{KcpClient, ClientConfig};
+use crate::kcp::transport::{ClientConfig, KcpClient};
 use crate::obf::Framer;
 
 #[derive(Debug, thiserror::Error)]
@@ -45,7 +45,10 @@ impl Connection {
     /// Open a new bidirectional stream via async_smux.
     /// Returns (SendStream, RecvStream) halves for backward compatibility.
     pub async fn open_bi(&self) -> Result<(SendStream, RecvStream), KcpError> {
-        let stream = self.client.open_stream().await
+        let stream = self
+            .client
+            .open_stream()
+            .await
             .map_err(|e| KcpError::Connection(e.to_string()))?;
         let (read, write) = tokio::io::split(stream);
         Ok((write, read))
@@ -55,10 +58,13 @@ impl Connection {
     /// Returns (SendStream, RecvStream) halves for backward compatibility.
     pub async fn accept_bi(&self) -> Result<(SendStream, RecvStream), KcpError> {
         let mut acceptor_guard = self.client.acceptor.lock().await;
-        let acceptor = acceptor_guard.as_mut()
+        let acceptor = acceptor_guard
+            .as_mut()
             .ok_or_else(|| KcpError::Connection("Mux not initialized".into()))?;
 
-        let stream = acceptor.accept().await
+        let stream = acceptor
+            .accept()
+            .await
             .ok_or_else(|| KcpError::Connection("No incoming stream".into()))?;
         let (read, write) = tokio::io::split(stream);
         Ok((write, read))
@@ -117,7 +123,6 @@ pub async fn connect(
     _initiation_payload: &[u8],
     _server_name: &str,
 ) -> Result<(Endpoint, Connection), KcpError> {
-    let rng = framer.rng().clone();
     let client_config = ClientConfig {
         max_packet_size: config.max_packet_size,
         max_payload: config.max_payload,
@@ -135,7 +140,7 @@ pub async fn connect(
         preamble_delay: std::time::Duration::from_millis(config.preamble_delay_ms),
     };
 
-    let client = KcpClient::connect(server_addr, framer, rng, client_config)
+    let client = KcpClient::connect(server_addr, framer, client_config)
         .await
         .map_err(|e| KcpError::Setup(e.to_string()))?;
 

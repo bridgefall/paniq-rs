@@ -18,8 +18,11 @@ pub trait PacketConn {
 /// This allows using tokio UdpSocket directly without from_std() conversion.
 #[cfg(feature = "kcp")]
 pub trait AsyncPacketConn {
-    async fn send(&mut self, data: Vec<u8>) -> Result<(), EnvelopeError>;
-    async fn recv(&mut self) -> Result<Vec<u8>, EnvelopeError>;
+    fn send(
+        &mut self,
+        data: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<(), EnvelopeError>> + Send;
+    fn recv(&mut self) -> impl std::future::Future<Output = Result<Vec<u8>, EnvelopeError>> + Send;
 }
 
 #[derive(Clone, Default)]
@@ -158,11 +161,10 @@ pub fn client_handshake<R: RngCore, C: PacketConn>(
 
 /// Async version of client_handshake for tokio sockets.
 #[cfg(feature = "kcp")]
-pub async fn client_handshake_async<R: RngCore, C: AsyncPacketConn>(
+pub async fn client_handshake_async<C: AsyncPacketConn>(
     conn: &mut C,
     framer: &Framer,
     initiation_payload: &[u8],
-    _rng: &mut R,
 ) -> Result<Vec<u8>, EnvelopeError> {
     const MAX_ATTEMPTS: usize = 64;
     const PACE: Duration = Duration::from_millis(2);
@@ -201,6 +203,7 @@ pub async fn client_handshake_async<R: RngCore, C: AsyncPacketConn>(
 #[cfg(feature = "kcp")]
 pub struct TokioPacketConn {
     pub sock: tokio::net::UdpSocket,
+    #[allow(dead_code)]
     peer: SocketAddr,
 }
 

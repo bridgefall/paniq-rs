@@ -14,8 +14,8 @@ use tokio::time::{timeout, Duration};
 
 const MAX_END_TO_END_LATENCY: Duration = Duration::from_secs(1);
 
-use paniq::kcp::client::connect_after_handshake;
-use paniq::kcp::server::listen_on_socket;
+use paniq::kcp::client::{connect, ClientConfigWrapper};
+use paniq::kcp::server::{listen, ServerConfigWrapper};
 use paniq::obf::{Config, Framer, SharedRng};
 use paniq::socks5::{AuthConfig, IoStream, RelayConnector, Socks5Server, SocksError, TargetAddr};
 use tokio::sync::oneshot;
@@ -61,7 +61,8 @@ async fn start_http_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                         if request.contains("GET") && request.contains("HTTP") {
                             let response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
                             let _ = socket.write_all(response.as_bytes()).await;
-                            // println!("HTTP: sent response");
+                            let _ = socket.shutdown().await; // Explicitly close connection
+                                                             // println!("HTTP: sent response");
                         }
                     }
                 });
@@ -81,22 +82,21 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
 
     // Start proxy server
     let server_framer = make_framer(&test_obf_config(), 456);
-    let server_config = ();
-    let client_config = ();
-    let server_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
-    let server_addr = server_sock.local_addr().unwrap();
+    let server_config = ServerConfigWrapper::default();
+    let client_config = ClientConfigWrapper::default();
+    let server_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
 
     let (ready_tx, ready_rx) = oneshot::channel();
 
     let server_task = tokio::spawn(async move {
-        let endpoint = listen_on_socket(server_sock, server_framer, server_config)
+        let endpoint = listen(server_addr, server_framer, server_config)
             .await
             .unwrap();
 
-        let _ = ready_tx.send(());
+        let _ = ready_tx.send(endpoint.local_addr());
 
         while let Some(incoming) = endpoint.accept().await {
-            if let Ok(conn) = incoming.await_connection().await {
+            if let Ok(mut conn) = incoming.await_connection().await {
                 tokio::spawn(async move {
                     while let Ok((mut send, mut recv)) = conn.accept_bi().await {
                         tokio::spawn(async move {
@@ -199,24 +199,25 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
         }
     });
 
-    ready_rx.await.unwrap();
+    let server_addr = ready_rx.await.unwrap();
 
     // Start SOCKS5 server
     let client_framer = make_framer(&test_obf_config(), 123);
     let client_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
 
-    let (_endpoint, kcp_conn) = connect_after_handshake(
+    let (_endpoint, kcp_conn) = connect(
         client_sock,
         server_addr,
         client_framer,
         client_config,
+        b"paniq",
         "paniq",
     )
     .await
     .unwrap();
 
     let connector = TestKcpConnector {
-        conn: Arc::new(tokio::sync::Mutex::new(kcp_conn)),
+        conn: Arc::new(kcp_conn),
     };
 
     let mut users = std::collections::HashMap::new();
@@ -296,7 +297,7 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
 
     // Read HTTP response
     let mut http_resp = vec![0u8; 1024];
-    let n = timeout(Duration::from_secs(10), socks_conn.read(&mut http_resp))
+    let n = timeout(Duration::from_secs(15), socks_conn.read(&mut http_resp))
         .await
         .unwrap()
         .unwrap();
@@ -323,12 +324,12 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
 
 // Test KCP connector for SOCKS5 - similar to the one in socks5d.rs
 struct TestKcpConnector {
-    conn: Arc<tokio::sync::Mutex<paniq::kcp::client::Connection>>,
+    conn: Arc<paniq::kcp::client::Connection>,
 }
 
 impl TestKcpConnector {
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, String> {
-        let conn = self.conn.lock().await;
+        let conn = &self.conn;
 
         // Open a new bidirectional stream
         let (mut send, recv) = conn

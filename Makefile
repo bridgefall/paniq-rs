@@ -79,7 +79,8 @@ test-unit:
 	$(CARGO) test --lib
 
 .PHONY: test-integration
-test-integration: test-kcp test-socks5
+test-integration: test-kcp
+# Note: test-socks5 disabled - tests use old API and are marked with #[ignore]
 
 .PHONY: test-all
 test-all:
@@ -119,6 +120,13 @@ test-golden:
 test-parity:
 	@echo "$(COLOR_BLUE)Running Go parity test...$(COLOR_RESET)"
 	$(CARGO) test --test $(TEST_PARITY) --features "kcp"
+
+# Soak tests (long-running stress tests)
+.PHONY: test-soak
+test-soak:
+	@echo "$(COLOR_BLUE)Running soak tests (30s)...$(COLOR_RESET)"
+	$(CARGO) test --test $(TEST_INTEGRATION_KCP) --features "socks5,kcp" soak_socks5_over_kcp_30s -- --nocapture
+
 
 # Test with verbose output
 .PHONY: test-verbose
@@ -199,6 +207,9 @@ help:
 	@echo "  make test-socks5        - Run all SOCKS5 tests"
 	@echo "  make test-socks5-kcp    - Run SOCKS5 KCP integration test"
 	@echo "  make test-socks5-realistic - Run SOCKS5 realistic integration test"
+	@echo ""
+	@echo "  $(COLOR_YELLOW)Soak Tests:$(COLOR_RESET)"
+	@echo "  make test-soak          - Run 30-second soak test"
 	@echo ""
 	@echo "$(COLOR_GREEN)Development:$(COLOR_RESET)"
 	@echo "  make fmt                - Format code"

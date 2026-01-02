@@ -122,7 +122,6 @@ impl AsyncRead for KcpStreamAdapter {
         // Try to receive new data from the read channel
         match self.read_rx.poll_recv(cx) {
             Poll::Ready(Some(data)) => {
-                eprintln!("Adapter poll_read: received {} bytes", data.len());
                 let remaining = data.len();
                 let space = buf.remaining();
 
@@ -139,7 +138,6 @@ impl AsyncRead for KcpStreamAdapter {
             }
             Poll::Ready(None) => {
                 // Channel closed - EOF
-                eprintln!("Adapter poll_read: channel closed - returning EOF");
                 Poll::Ready(Ok(()))
             }
             Poll::Pending => Poll::Pending,
@@ -154,26 +152,22 @@ impl AsyncWrite for KcpStreamAdapter {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         // Reserve space in the channel
- eprintln!("Adapter poll_write called with {} bytes", buf.len());
         ready!(self
             .write_tx
             .poll_reserve(cx)
             .map_err(|_| { io::Error::new(io::ErrorKind::BrokenPipe, "write channel closed") })?);
-        eprintln!("Adapter poll_write: poll_reserve successful");
 
         // Send the data - should not fail if poll_reserve succeeded
         if let Err(_) = self.write_tx.send_item(Bytes::copy_from_slice(buf)) {
-            eprintln!("Adapter poll_write: send_item FAILED!");
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "send_item failed - channel closed",
             )));
         }
-        eprintln!("Adapter poll_write: send_item successful, returning {} bytes", buf.len());
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         // PollSender doesn't have poll_flush, just return Ready
         Poll::Ready(Ok(()))
     }
@@ -200,8 +194,6 @@ pub async fn run_kcp_pump(
     let mut update_interval = tokio::time::interval(std::time::Duration::from_millis(20));
 
     // Drain any initial output
-    eprintln!("KCP pump: initial drain complete, entering loop");
-    eprintln!("KCP pump: draining initial output");
     drain_output(kcp.as_mut(), &output_tx).await?;
 
     loop {
@@ -209,7 +201,6 @@ pub async fn run_kcp_pump(
             // Incoming KCP packets from UDP (feed kcp.input)
             Some(data) = input_rx.recv() => {
                 if let Err(e) = kcp.input(&data) {
-                eprintln!("KCP pump: UDP input {} bytes", data.len());
                     tracing::warn!("KCP input error: {}", e);
                 } else {
                     kcp.update(system_time_ms());
@@ -219,13 +210,11 @@ pub async fn run_kcp_pump(
 
             // Application data to send via KCP (feed kcp.send)
             Some(data) = write_rx.recv() => {
-                eprintln!("KCP pump: received {} bytes from smux write", data.len());
                 if let Err(e) = kcp.as_mut().send(&data) {
                     tracing::warn!("KCP send error: {}", e);
                 } else {
                     kcp.update(system_time_ms());
                     kcp.flush();
-                    eprintln!("KCP pump: flushed, has_output={}", kcp.has_ouput());
                 }
             }
 
@@ -275,9 +264,7 @@ async fn drain_output(
 ) -> io::Result<()> {
     while kcp.has_ouput() {
         if let Some(data) = kcp.pop_output() {
-            eprintln!("drain_output: sending {} bytes to UDP", data.len());
             if output_tx.send(data.to_vec()).await.is_err() {
-                eprintln!("drain_output: output_tx channel closed!");
                 return Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "output channel closed",

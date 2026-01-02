@@ -1,4 +1,7 @@
-use std::net::TcpListener;
+#![cfg(feature = "socks5")]
+#![cfg(feature = "kcp")]
+
+use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,8 +12,8 @@ use tokio::task::JoinHandle;
 
 use async_trait::async_trait;
 
-use paniq::kcp::client::connect_after_handshake;
-use paniq::kcp::server::listen_on_socket;
+use paniq::kcp::client::{connect, ClientConfigWrapper};
+use paniq::kcp::server::{listen, ServerConfigWrapper};
 use paniq::obf::Framer;
 use paniq::profile::Profile;
 use paniq::socks5::{AuthConfig, RelayConnector, Socks5Server, SocksError, TargetAddr};
@@ -67,14 +70,15 @@ async fn run_proxy_server(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let profile = Profile::from_file(&profile_path)?;
     let framer = Framer::new(profile.obf_config())?;
-    let udp_sock = std::net::UdpSocket::bind(("127.0.0.1", port))?;
-    let endpoint = listen_on_socket(udp_sock, framer, ()).await?;
+    let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
+    let server_config = ServerConfigWrapper::default();
+    let endpoint = listen(addr, framer, server_config).await?;
 
     let _ = ready.send(Ok(()));
 
     while let Some(incoming) = endpoint.accept().await {
         tokio::spawn(async move {
-            if let Ok(conn) = incoming.await_connection().await {
+            if let Ok(mut conn) = incoming.await_connection().await {
                 tokio::spawn(async move {
                     while let Ok((send, recv)) = conn.accept_bi().await {
                         tokio::spawn(async move {
@@ -189,8 +193,16 @@ async fn run_socks5d(
 
     let server_addr = profile.proxy_addr.parse()?;
     let client_sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
-    let (_ep, conn) =
-        connect_after_handshake(client_sock, server_addr, framer, (), "paniq").await?;
+    let client_config = ClientConfigWrapper::default();
+    let (_ep, conn) = connect(
+        client_sock,
+        server_addr,
+        framer,
+        client_config,
+        b"paniq",
+        "paniq",
+    )
+    .await?;
     let connector = TestKcpConnector { conn };
 
     let auth = AuthConfig::default();
