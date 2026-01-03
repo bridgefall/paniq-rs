@@ -319,7 +319,10 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
     }
     let response = String::from_utf8_lossy(&http_resp);
 
-    assert!(response.contains("200 OK"), "response missing 200 OK: {response}");
+    assert!(
+        response.contains("200 OK"),
+        "response missing 200 OK: {response}"
+    );
     assert!(response.contains("ok"), "response missing body: {response}");
 
     let elapsed = latency_start.elapsed();
@@ -465,24 +468,300 @@ async fn integration_socks5_over_kcp() {
 
 #[tokio::test]
 async fn soak_socks5_over_kcp_30s() {
-    // Warm up once to avoid startup noise skewing the soak run
-    let _ = socks5_over_kcp_roundtrip().await;
+    // Test duration can be configured via SOAK_SECS env var (default: 30 seconds)
+    let soak_duration = std::env::var("SOAK_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(30);
+    let soak_duration = Duration::from_secs(soak_duration);
 
+    // Create persistent servers ONCE, then run many iterations.
+    // This is more realistic and avoids resource exhaustion from
+    // repeatedly binding/unbinding 4500+ sockets.
+
+    let (http_addr, http_handle) = start_http_server().await;
+
+    let server_framer = make_framer(&test_obf_config(), 456);
+    let server_config = ServerConfigWrapper::default();
+    let client_config = ClientConfigWrapper::default();
+    let server_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
+
+    let (ready_tx, ready_rx) = oneshot::channel();
+
+    // Start KCP server
+    let server_task = tokio::spawn(async move {
+        let endpoint = listen(server_addr, server_framer, server_config)
+            .await
+            .unwrap();
+
+        let _ = ready_tx.send(endpoint.local_addr());
+
+        while let Some(incoming) = endpoint.accept().await {
+            if let Ok(mut conn) = incoming.await_connection().await {
+                tokio::spawn(async move {
+                    while let Ok((mut send, mut recv)) = conn.accept_bi().await {
+                        tokio::spawn(async move {
+                            // Read proxy request
+                            let mut header = [0u8; 2];
+                            if recv.read_exact(&mut header).await.is_err() {
+                                return;
+                            }
+                            if header[0] != 0x01 {
+                                return;
+                            }
+
+                            let addr_type = header[1];
+                            let target_str: String = match addr_type {
+                                0x01 => {
+                                    let mut addr_bytes = [0u8; 4];
+                                    if recv.read_exact(&mut addr_bytes).await.is_err() {
+                                        return;
+                                    }
+                                    let mut port_bytes = [0u8; 2];
+                                    if recv.read_exact(&mut port_bytes).await.is_err() {
+                                        return;
+                                    }
+                                    let port = u16::from_be_bytes(port_bytes);
+                                    format!("{}:{}", std::net::Ipv4Addr::from(addr_bytes), port)
+                                }
+                                0x03 => {
+                                    let mut len_bytes = [0u8; 1];
+                                    if recv.read_exact(&mut len_bytes).await.is_err() {
+                                        return;
+                                    }
+                                    let len = len_bytes[0] as usize;
+                                    let mut domain_bytes = vec![0u8; len];
+                                    if recv.read_exact(&mut domain_bytes).await.is_err() {
+                                        return;
+                                    }
+                                    let mut port_bytes = [0u8; 2];
+                                    if recv.read_exact(&mut port_bytes).await.is_err() {
+                                        return;
+                                    }
+                                    let port = u16::from_be_bytes(port_bytes);
+                                    let domain = String::from_utf8_lossy(&domain_bytes).to_string();
+                                    format!("{}:{}", domain, port)
+                                }
+                                _ => return,
+                            };
+
+                            // Connect to target
+                            let mut target_stream =
+                                match tokio::net::TcpStream::connect(&target_str).await {
+                                    Ok(s) => s,
+                                    Err(_) => return,
+                                };
+
+                            // Relay bidirectionally - both directions run concurrently
+                            let (mut target_read, mut target_write) = target_stream.split();
+                            let mut recv_buf = vec![0u8; 8192];
+                            let mut send_buf = vec![0u8; 8192];
+
+                            // KCP → Target (client_to_target)
+                            let client_to_target = async {
+                                loop {
+                                    match recv.read(&mut recv_buf).await {
+                                        Ok(0) => {
+                                            break;
+                                        }
+                                        Ok(n) => {
+                                            if target_write.write_all(&recv_buf[..n]).await.is_err()
+                                            {
+                                                break;
+                                            }
+                                            let _ = target_write.flush().await;
+                                        }
+                                        Err(_) => {
+                                            break;
+                                        }
+                                    }
+                                }
+                                drop(target_write);
+                                Ok::<(), ()>(())
+                            };
+
+                            // Target → KCP (target_to_client)
+                            let target_to_client = async {
+                                loop {
+                                    match target_read.read(&mut send_buf).await {
+                                        Ok(0) => {
+                                            break;
+                                        }
+                                        Ok(n) => {
+                                            if send.write_all(&send_buf[..n]).await.is_err() {
+                                                break;
+                                            }
+                                            let _ = send.flush().await;
+                                        }
+                                        Err(_) => {
+                                            break;
+                                        }
+                                    }
+                                }
+                                let _ = send.shutdown().await;
+                                Ok::<(), ()>(())
+                            };
+
+                            // Run both concurrently until BOTH complete
+                            let _ = tokio::try_join!(client_to_target, target_to_client);
+                        });
+                    }
+                });
+            }
+        }
+    });
+
+    let server_addr = ready_rx.await.unwrap();
+
+    // Start SOCKS5 server
+    let client_framer = make_framer(&test_obf_config(), 123);
+    let client_sock = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+
+    let (_endpoint, kcp_conn) = connect(
+        client_sock,
+        server_addr,
+        client_framer,
+        client_config,
+        b"paniq",
+        "paniq",
+    )
+    .await
+    .unwrap();
+
+    let connector = TestKcpConnector {
+        conn: Arc::new(kcp_conn),
+    };
+
+    let mut users = std::collections::HashMap::new();
+    users.insert("user".to_string(), "pass".to_string());
+    let auth = AuthConfig { users };
+
+    let socks_server = Arc::new(Socks5Server::new(connector, auth));
+    let socks_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socks_addr = socks_listener.local_addr().unwrap();
+
+    let socks_handle = tokio::spawn(async move {
+        loop {
+            if let Ok((stream, _)) = socks_listener.accept().await {
+                let server = socks_server.clone();
+                tokio::spawn(async move {
+                    let _ = server.serve_stream(stream).await;
+                });
+            }
+        }
+    });
+
+    // Give servers time to start
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Now run the actual soak test with REUSED connections
     let start = Instant::now();
     let mut iterations = 0usize;
 
-    while start.elapsed() < Duration::from_secs(30) {
-        let elapsed = socks5_over_kcp_roundtrip().await;
+    while start.elapsed() < soak_duration {
+        let iter_start = Instant::now();
+
+        // Connect as SOCKS5 client
+        let mut socks_conn = tokio::net::TcpStream::connect(socks_addr).await.unwrap();
+        socks_conn.set_nodelay(true).unwrap();
+
+        // SOCKS5 handshake with auth
+        socks_conn
+            .write_all(&[0x05, 0x02, 0x00, 0x02])
+            .await
+            .unwrap();
+        let mut resp = [0u8; 2];
+        socks_conn.read_exact(&mut resp).await.unwrap();
+        assert_eq!(resp, [0x05, 0x02]);
+
+        let mut auth_msg = vec![0x01];
+        auth_msg.push(4u8);
+        auth_msg.extend_from_slice(b"user");
+        auth_msg.push(4u8);
+        auth_msg.extend_from_slice(b"pass");
+        socks_conn.write_all(&auth_msg).await.unwrap();
+        socks_conn.read_exact(&mut resp).await.unwrap();
+        assert_eq!(resp, [0x01, 0x00]);
+
+        // CONNECT request to HTTP server
+        let mut connect_req = vec![0x05, 0x01, 0x00];
+        match http_addr.ip() {
+            std::net::IpAddr::V4(ipv4) => {
+                connect_req.push(0x01);
+                connect_req.extend_from_slice(&ipv4.octets());
+            }
+            std::net::IpAddr::V6(ipv6) => {
+                connect_req.push(0x04);
+                connect_req.extend_from_slice(&ipv6.octets());
+            }
+        }
+        connect_req.extend_from_slice(&http_addr.port().to_be_bytes());
+        socks_conn.write_all(&connect_req).await.unwrap();
+
+        let mut reply = [0u8; 10];
+        socks_conn.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[1], 0x00);
+
+        // Send HTTP GET request
+        let http_req = format!(
+            "GET / HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            http_addr.to_string().split(':').next().unwrap()
+        );
+        socks_conn.write_all(http_req.as_bytes()).await.unwrap();
+
+        // Read HTTP response
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut http_resp = Vec::with_capacity(1024);
+        let mut buf = [0u8; 512];
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            match timeout(remaining, socks_conn.read(&mut buf)).await {
+                Ok(Ok(n)) => {
+                    if n == 0 {
+                        break;
+                    }
+                    http_resp.extend_from_slice(&buf[..n]);
+                }
+                Ok(Err(_)) => {
+                    break;
+                }
+                Err(_) => {
+                    break;
+                }
+            }
+            let response = String::from_utf8_lossy(&http_resp);
+            if response.contains("200 OK") && response.contains("ok") {
+                break;
+            }
+        }
+        let response = String::from_utf8_lossy(&http_resp);
+
+        assert!(
+            response.contains("200 OK"),
+            "response missing 200 OK: {response}"
+        );
+        assert!(response.contains("ok"), "response missing body: {response}");
+
+        let elapsed = iter_start.elapsed();
         assert!(
             elapsed < MAX_END_TO_END_LATENCY,
             "Iteration latency too high: {:?}",
             elapsed
         );
+
         iterations += 1;
-        if iterations % 10 == 0 {
+        if iterations % 1000 == 0 {
             println!("Soak iteration {}", iterations);
         }
     }
+
+    // Cleanup
+    socks_handle.abort();
+    server_task.abort();
+    http_handle.abort();
 
     assert!(iterations > 0, "No iterations executed in soak test");
 }

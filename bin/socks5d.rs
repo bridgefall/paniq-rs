@@ -198,10 +198,17 @@ impl AsyncWrite for StreamWrapper {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        // async_smux treats shutdown as a full close. For SOCKS relay we want
-        // to stop writing without closing the entire stream (no half-close).
-        let _ = cx;
-        self.send = None;
-        std::task::Poll::Ready(Ok(()))
+        // Send FIN frame to signal graceful shutdown of the KCP/smux stream.
+        // This is critical for smux stream cleanup; without it, the session
+        // state becomes corrupted when opening subsequent streams.
+        if let Some(send) = &mut self.send {
+            let poll_result = std::pin::Pin::new(send).poll_shutdown(cx);
+            if poll_result.is_ready() {
+                self.send = None;
+            }
+            poll_result
+        } else {
+            std::task::Poll::Ready(Ok(()))
+        }
     }
 }

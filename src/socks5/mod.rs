@@ -15,8 +15,6 @@ use fast_socks5::server::{
 use fast_socks5::util::target_addr as fast_target;
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::info_span;
-use tracing::Instrument;
 
 use thiserror::Error;
 
@@ -238,17 +236,6 @@ where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let span = info_span!("socks5_relay");
-    relay_bidirectional_inner(client, remote)
-        .instrument(span)
-        .await
-}
-
-async fn relay_bidirectional_inner<C, R>(client: C, remote: R) -> Result<(), SocksError>
-where
-    C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
     tracing::info!("Starting bidirectional relay");
     let (mut client_read, mut client_write) = tokio::io::split(client);
     let (mut remote_read, mut remote_write) = tokio::io::split(remote);
@@ -281,7 +268,14 @@ where
                 }
             }
         }
-        tracing::debug!("client_to_remote: Complete, NOT calling shutdown on KCP");
+        // Send FIN frame to signal graceful shutdown of the KCP/smux stream.
+        // This is critical for smux stream cleanup; without it, the session
+        // state becomes corrupted when opening subsequent streams.
+        tracing::debug!("client_to_remote: Shutting down remote write");
+        if let Err(e) = remote_write.shutdown().await {
+            tracing::warn!(error = %e, "client_to_remote: Shutdown failed, stream may not be cleanly closed");
+        }
+        tracing::debug!("client_to_remote: Complete");
         Ok::<u64, std::io::Error>(total)
     };
 
@@ -313,7 +307,11 @@ where
                 }
             }
         }
-        tracing::debug!("remote_to_client: Complete, NOT calling shutdown");
+        // Shutdown the client write half for clean TCP closure
+        tracing::debug!("remote_to_client: Shutting down client write");
+        if let Err(e) = client_write.shutdown().await {
+            tracing::warn!(error = %e, "remote_to_client: Shutdown failed");
+        }
         Ok::<u64, std::io::Error>(total)
     };
 

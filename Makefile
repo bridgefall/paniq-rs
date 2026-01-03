@@ -122,9 +122,10 @@ test-parity:
 	$(CARGO) test --test $(TEST_PARITY) --features "kcp"
 
 # Soak tests (long-running stress tests)
+# Usage: make test-soak SOAK_SECS=60  (default: 30 seconds)
 .PHONY: test-soak
 test-soak:
-	@echo "$(COLOR_BLUE)Running soak tests (30s)...$(COLOR_RESET)"
+	@echo "$(COLOR_BLUE)Running soak tests ($(SOAK_SECS)s)...$(COLOR_RESET)"
 	$(CARGO) test --test $(TEST_INTEGRATION_KCP) --features "socks5,kcp" soak_socks5_over_kcp_30s -- --nocapture
 
 
@@ -209,7 +210,8 @@ help:
 	@echo "  make test-socks5-realistic - Run SOCKS5 realistic integration test"
 	@echo ""
 	@echo "  $(COLOR_YELLOW)Soak Tests:$(COLOR_RESET)"
-	@echo "  make test-soak          - Run 30-second soak test"
+	@echo "  make test-soak          - Run soak test (default: 30s)"
+	@echo "  make test-soak SOAK_SECS=60 - Run 60-second soak test"
 	@echo ""
 	@echo "$(COLOR_GREEN)Development:$(COLOR_RESET)"
 	@echo "  make fmt                - Format code"
