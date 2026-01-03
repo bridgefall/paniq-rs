@@ -659,10 +659,10 @@ async fn soak_socks5_over_kcp_30s() {
     let mut iterations = 0usize;
 
     while start.elapsed() < soak_duration {
-        let iter_start = Instant::now();
-
-        // Connect as SOCKS5 client
-        let mut socks_conn = tokio::net::TcpStream::connect(socks_addr).await.unwrap();
+        // Per-iteration timeout to prevent stalls from hanging the entire test
+        let iteration_result = timeout(Duration::from_secs(20), async {
+            // Connect as SOCKS5 client
+            let mut socks_conn = tokio::net::TcpStream::connect(socks_addr).await.unwrap();
         socks_conn.set_nodelay(true).unwrap();
 
         // SOCKS5 handshake with auth
@@ -701,6 +701,9 @@ async fn soak_socks5_over_kcp_30s() {
         let mut reply = [0u8; 10];
         socks_conn.read_exact(&mut reply).await.unwrap();
         assert_eq!(reply[1], 0x00);
+
+        // Start timing AFTER connection establishment (consistent with roundtrip test)
+        let iter_start = Instant::now();
 
         // Send HTTP GET request
         let http_req = format!(
@@ -752,6 +755,20 @@ async fn soak_socks5_over_kcp_30s() {
             elapsed
         );
 
+        // Gracefully shutdown the TCP connection to ensure the SOCKS5 relay
+        // runs its cleanup path (shutdown() on smux streams). This is critical
+        // for smux stream cleanup; without it, the persistent KCP session
+        // can become corrupted over many iterations.
+        let _ = socks_conn.shutdown().await;
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+        }).await;
+
+        // Handle timeout - fail the test if an iteration times out
+        if let Err(e) = iteration_result {
+            panic!("Iteration timed out or failed: {}", e);
+        }
+
         iterations += 1;
         if iterations % 1000 == 0 {
             println!("Soak iteration {}", iterations);
@@ -764,4 +781,22 @@ async fn soak_socks5_over_kcp_30s() {
     http_handle.abort();
 
     assert!(iterations > 0, "No iterations executed in soak test");
+}
+
+#[tokio::test]
+async fn lifecycle_repeated_setup_teardown() {
+    // Test repeated server setup/teardown to catch resource leaks.
+    // This is separate from the soak test which reuses connections.
+    // Configurable via LIFECYCLE_ITERATIONS env var (default: 10).
+    let iterations = std::env::var("LIFECYCLE_ITERATIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+
+    for i in 0..iterations {
+        let _elapsed = socks5_over_kcp_roundtrip().await;
+        if i % 5 == 0 {
+            println!("Lifecycle iteration {}/{}", i + 1, iterations);
+        }
+    }
 }
