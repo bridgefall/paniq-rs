@@ -71,17 +71,17 @@ async fn kcp_round_trip_over_obfuscating_socket() {
         let server_ep = listen(known_addr, server_framer, server_config)
             .await
             .unwrap();
-        eprintln!("Server listening on {}", server_ep.local_addr());
+        tracing::info!(listen_addr = %server_ep.local_addr(), "Server listening");
         if let Some(incoming) = server_ep.accept().await {
-            eprintln!("Server accepted connection");
+            tracing::info!("Server accepted connection");
             let mut connection = incoming.await_connection().await.unwrap();
             let (mut send, mut recv) = connection.accept_bi().await.unwrap();
             let mut buf = vec![0u8; 64];
             let n = recv.read(&mut buf).await.unwrap();
-            eprintln!("Server read {} bytes: {:?}", n, &buf[..n]);
+            tracing::debug!(bytes = n, data = ?&buf[..n], "Server read");
             send.write_all(&buf[..n]).await.unwrap();
             send.shutdown().await.unwrap();
-            eprintln!("Server echoed data");
+            tracing::debug!("Server echoed data");
         }
     });
 

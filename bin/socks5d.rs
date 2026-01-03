@@ -9,9 +9,19 @@ use paniq::kcp::client::ClientConfigWrapper;
 use paniq::obf::Framer;
 use paniq::profile::Profile;
 use paniq::socks5::{AuthConfig, IoStream, RelayConnector, Socks5Server, SocksError, TargetAddr};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Initialize tracing subscriber with environment filter
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(tracing::Level::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+
     let args = parse_args()?;
     let profile = Profile::from_file(&args.profile)?;
     let obf_config = profile.obf_config();
@@ -53,16 +63,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server = Arc::new(Socks5Server::new(connector, auth));
     let listener = TcpListener::bind(&args.listen_addr).await?;
 
-    eprintln!("SOCKS5 daemon listening on {}", args.listen_addr);
-    eprintln!("Connected to proxy server at {}", server_addr);
+    tracing::info!(listen_addr = %args.listen_addr, "SOCKS5 daemon listening");
+    tracing::info!(server_addr = %server_addr, "Connected to proxy server");
 
     loop {
         let (stream, addr) = listener.accept().await?;
         let server = server.clone();
-        eprintln!("accepted {addr}");
+        tracing::debug!(client_addr = %addr, "Accepted client connection");
         tokio::spawn(async move {
             if let Err(err) = server.serve_stream(stream).await {
-                eprintln!("socks5 stream error: {err}");
+                tracing::error!(error = %err, client_addr = %addr, "SOCKS5 stream error");
             }
         });
     }

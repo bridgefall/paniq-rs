@@ -11,8 +11,8 @@ cd "$SCRIPT_DIR"
 PROXY_PORT=19000
 SOCKS_PORT=11080
 HTTP_PORT=18080
-PROFILE_PATH="examples/profile.json"
-LOG_DIR="$SCRIPT_DIR/e2e-logs"
+PROFILE_PATH="../examples/profile.json"
+LOG_DIR="$SCRIPT_DIR/../e2e-logs"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 # Log files
@@ -111,7 +111,7 @@ echo "✅ HTTP server is ready on port $HTTP_PORT" | tee -a "$TEST_LOG"
 
 
 echo "=== Starting proxy-server ===" | tee -a "$TEST_LOG"
-./target/debug/proxy-server -l "127.0.0.1:$PROXY_PORT" -p "$TEST_PROFILE" > "$PROXY_LOG" 2>&1 &
+../target/debug/proxy-server -l "127.0.0.1:$PROXY_PORT" -p "$TEST_PROFILE" > "$PROXY_LOG" 2>&1 &
 PROXY_PID=$!
 echo "proxy-server PID: $PROXY_PID" | tee -a "$TEST_LOG"
 
@@ -137,7 +137,7 @@ if ! grep -q "listening on" "$PROXY_LOG" 2>/dev/null; then
 fi
 
 echo "=== Starting socks5d ===" | tee -a "$TEST_LOG"
-./target/debug/socks5d --profile "$TEST_PROFILE" --listen "127.0.0.1:$SOCKS_PORT" > "$SOCKS_LOG" 2>&1 &
+../target/debug/socks5d --profile "$TEST_PROFILE" --listen "127.0.0.1:$SOCKS_PORT" > "$SOCKS_LOG" 2>&1 &
 SOCKS_PID=$!
 echo "socks5d PID: $SOCKS_PID" | tee -a "$TEST_LOG"
 

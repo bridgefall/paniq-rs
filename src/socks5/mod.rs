@@ -15,6 +15,8 @@ use fast_socks5::server::{
 use fast_socks5::util::target_addr as fast_target;
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tracing::info_span;
+use tracing::Instrument;
 
 use thiserror::Error;
 
@@ -132,19 +134,19 @@ impl<C: RelayConnector> Socks5Server<C> {
     {
         let socket = Socks5Socket::new(stream, Arc::new(config));
 
-        eprintln!("[SOCKS5] Upgrading to SOCKS5 protocol");
+        tracing::info!("Upgrading to SOCKS5 protocol");
         let mut socket = socket
             .upgrade_to_socks5()
             .await
             .map_err(|e| SocksError::Protocol(e.to_string()))?;
 
         let target = map_target(socket.target_addr().cloned())?;
-        eprintln!("[SOCKS5] Connecting to target: {:?}", target);
+        tracing::debug!(target = ?target, "Connecting to target");
         let remote = self.connector.connect(&target).await?;
-        eprintln!("[SOCKS5] Connected to target, sending success reply");
+        tracing::info!("Connected to target, sending success reply");
 
         send_success_reply(&mut socket, &target).await?;
-        eprintln!("[SOCKS5] Success reply sent, starting relay");
+        tracing::info!("Success reply sent, starting relay");
 
         relay_bidirectional(socket, remote).await
     }
@@ -236,79 +238,99 @@ where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    eprintln!("[SOCKS5] Starting bidirectional relay");
+    let span = info_span!("socks5_relay");
+    relay_bidirectional_inner(client, remote)
+        .instrument(span)
+        .await
+}
+
+async fn relay_bidirectional_inner<C, R>(client: C, remote: R) -> Result<(), SocksError>
+where
+    C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    tracing::info!("Starting bidirectional relay");
     let (mut client_read, mut client_write) = tokio::io::split(client);
     let (mut remote_read, mut remote_write) = tokio::io::split(remote);
 
     let client_to_remote = async {
-        eprintln!("[SOCKS5] client_to_remote: Starting");
+        tracing::debug!("client_to_remote: Starting");
         let mut buf = vec![0u8; 8192];
         let mut total = 0u64;
         loop {
             match client_read.read(&mut buf).await {
                 Ok(0) => {
-                    eprintln!(
-                        "[SOCKS5] client_to_remote: Got EOF from client, {} bytes total",
-                        total
+                    tracing::debug!(
+                        bytes_out = total,
+                        "client_to_remote: Got EOF from client"
                     );
                     break;
                 }
                 Ok(n) => {
-                    eprintln!("[SOCKS5] client_to_remote: Read {} bytes from client", n);
+                    tracing::trace!(
+                        bytes = n,
+                        direction = "client_to_remote",
+                        "Read from client"
+                    );
                     remote_write.write_all(&buf[..n]).await?;
                     total += n as u64;
                 }
                 Err(e) => {
-                    eprintln!("[SOCKS5] client_to_remote: Read error: {}", e);
+                    tracing::error!(error = %e, "client_to_remote: Read error");
                     return Err(e);
                 }
             }
         }
-        eprintln!("[SOCKS5] client_to_remote: Complete, NOT calling shutdown on KCP");
+        tracing::debug!("client_to_remote: Complete, NOT calling shutdown on KCP");
         Ok::<u64, std::io::Error>(total)
     };
 
     let remote_to_client = async {
-        eprintln!("[SOCKS5] remote_to_client: Starting");
+        tracing::debug!("remote_to_client: Starting");
         let mut buf = vec![0u8; 8192];
         let mut total = 0u64;
         loop {
             match remote_read.read(&mut buf).await {
                 Ok(0) => {
-                    eprintln!(
-                        "[SOCKS5] remote_to_client: Got EOF from remote (KCP), {} bytes total",
-                        total
+                    tracing::debug!(
+                        bytes_in = total,
+                        "remote_to_client: Got EOF from remote (KCP)"
                     );
                     break;
                 }
                 Ok(n) => {
-                    eprintln!("[SOCKS5] remote_to_client: Read {} bytes from KCP", n);
+                    tracing::trace!(
+                        bytes = n,
+                        direction = "remote_to_client",
+                        "Read from KCP"
+                    );
                     client_write.write_all(&buf[..n]).await?;
                     total += n as u64;
                 }
                 Err(e) => {
-                    eprintln!("[SOCKS5] remote_to_client: Read error: {}", e);
+                    tracing::error!(error = %e, "remote_to_client: Read error");
                     return Err(e);
                 }
             }
         }
-        eprintln!("[SOCKS5] remote_to_client: Complete, NOT calling shutdown");
+        tracing::debug!("remote_to_client: Complete, NOT calling shutdown");
         Ok::<u64, std::io::Error>(total)
     };
 
-    eprintln!("[SOCKS5] Launching both relay tasks");
+    tracing::debug!("Launching both relay tasks");
     let result = tokio::try_join!(client_to_remote, remote_to_client);
 
     match result {
         Ok((to_remote, to_client)) => {
-            eprintln!(
-                "[SOCKS5] Relay complete: {} bytes to remote, {} bytes to client",
-                to_remote, to_client
+            tracing::info!(
+                bytes_out = to_remote,
+                bytes_in = to_client,
+                "Relay complete"
             );
             Ok(())
         }
         Err(e) => {
-            eprintln!("[SOCKS5] Relay error: {}", e);
+            tracing::error!(error = %e, "Relay error");
             Err(SocksError::Io(e))
         }
     }

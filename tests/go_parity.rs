@@ -10,13 +10,13 @@ fn go_rust_chain_parity_smoke() {
 
     // Skip if Go toolchain or module is unavailable in this environment.
     if Command::new("go").arg("version").output().is_err() {
-        eprintln!("skipping go parity test: go toolchain unavailable");
+        tracing::warn!("skipping go parity test: go toolchain unavailable");
         return;
     }
 
     let go_project_root = manifest_dir.join("_reference/paniq");
     if !go_project_root.join("go.mod").exists() {
-        eprintln!("skipping go parity test: go.mod not present in _reference/paniq");
+        tracing::warn!("skipping go parity test: go.mod not present in _reference/paniq");
         return;
     }
 

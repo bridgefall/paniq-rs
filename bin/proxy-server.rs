@@ -6,9 +6,21 @@ use paniq::kcp::server::ServerConfigWrapper;
 use paniq::obf::Framer;
 use paniq::profile::Profile;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::info_span;
+use tracing_subscriber::EnvFilter;
+use tracing::Instrument;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Initialize tracing subscriber with environment filter
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(tracing::Level::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+
     let args = parse_args()?;
     let profile = Profile::from_file(&args.profile)?;
     let framer = Framer::new(profile.obf_config())?;
@@ -29,19 +41,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let endpoint = listen(args.listen, framer, config).await?;
-    eprintln!("proxy-server listening on {}", endpoint.local_addr());
+    tracing::info!(listen_addr = %endpoint.local_addr(), "proxy-server listening");
 
     // Accept incoming connections and handle them
     loop {
         if let Some(conn) = endpoint.accept().await {
-            eprintln!("Accepted connection from {}", conn.peer_addr());
             let peer_addr = conn.peer_addr();
+            tracing::info!(peer_addr = %peer_addr, "Accepted connection");
 
-            tokio::spawn(async move {
-                if let Err(e) = handle_connection(conn).await {
-                    eprintln!("Error handling connection from {}: {:?}", peer_addr, e);
+            let span = info_span!("conn", peer_addr = %peer_addr);
+            tokio::spawn(
+                async move {
+                    if let Err(e) = handle_connection(conn).await {
+                        tracing::error!(
+                            error = %e,
+                            peer_addr = %peer_addr,
+                            "Error handling connection"
+                        );
+                    }
                 }
-            });
+                .instrument(span),
+            );
         }
     }
 }
@@ -56,16 +76,16 @@ async fn handle_connection(
         // Accept new bidirectional stream
         match server_conn.accept_bi().await {
             Ok((mut send, mut recv)) => {
-                eprintln!("Accepted stream from {}", server_conn.peer_addr());
+                tracing::info!("Accepted stream");
 
                 tokio::spawn(async move {
                     if let Err(e) = handle_stream(&mut send, &mut recv).await {
-                        eprintln!("Error handling stream: {:?}", e);
+                        tracing::error!(error = %e, "Error handling stream");
                     }
                 });
             }
-            Err(_) => {
-                // No more streams
+            Err(e) => {
+                tracing::debug!(error = %e, "accept_bi error, closing connection");
                 break;
             }
         }
@@ -129,80 +149,89 @@ async fn handle_stream(
     let mut target_stream = connect_target(target).await?;
 
     // Manual relay instead of tokio::io::copy to handle half-close properly
-    eprintln!("[PROXY] Starting bidirectional relay");
+    tracing::info!("Starting bidirectional relay");
     let (mut target_read, mut target_write) = target_stream.split();
 
     let client_to_target = async {
-        eprintln!("[PROXY] client_to_target: Starting");
+        tracing::debug!("client_to_target: Starting");
         let mut buf = vec![0u8; 8192];
         let mut total = 0u64;
         loop {
             match recv.read(&mut buf).await {
                 Ok(0) => {
-                    eprintln!(
-                        "[PROXY] client_to_target: Got EOF from KCP recv, {} bytes total",
-                        total
+                    tracing::debug!(
+                        bytes_in = total,
+                        "client_to_target: Got EOF from KCP recv"
                     );
                     break;
                 }
                 Ok(n) => {
-                    eprintln!("[PROXY] client_to_target: Read {} bytes from KCP", n);
+                    tracing::trace!(
+                        bytes = n,
+                        direction = "client_to_target",
+                        "Read from KCP"
+                    );
                     target_write.write_all(&buf[..n]).await?;
                     total += n as u64;
                 }
                 Err(e) => {
-                    eprintln!("[PROXY] client_to_target: Read error: {}", e);
+                    tracing::error!(error = %e, "client_to_target: Read error");
                     return Err(e);
                 }
             }
         }
-        eprintln!("[PROXY] client_to_target: Shutting down TCP write");
+        tracing::debug!("client_to_target: Shutting down TCP write");
         target_write.shutdown().await?;
-        eprintln!("[PROXY] client_to_target: Complete");
+        tracing::debug!("client_to_target: Complete");
         Ok::<u64, std::io::Error>(total)
     };
 
     let target_to_client = async {
-        eprintln!("[PROXY] target_to_client: Starting");
+        tracing::debug!("target_to_client: Starting");
         let mut buf = vec![0u8; 8192];
         let mut total = 0u64;
         loop {
             match target_read.read(&mut buf).await {
                 Ok(0) => {
-                    eprintln!(
-                        "[PROXY] target_to_client: Got EOF from TCP read, {} bytes total",
-                        total
+                    tracing::debug!(
+                        bytes_out = total,
+                        "target_to_client: Got EOF from TCP read"
                     );
                     break;
                 }
                 Ok(n) => {
-                    eprintln!("[PROXY] target_to_client: Read {} bytes from TCP", n);
+                    tracing::trace!(
+                        bytes = n,
+                        direction = "target_to_client",
+                        "Read from TCP"
+                    );
                     send.write_all(&buf[..n]).await?;
                     total += n as u64;
                 }
                 Err(e) => {
-                    eprintln!("[PROXY] target_to_client: Read error: {}", e);
+                    tracing::error!(error = %e, "target_to_client: Read error");
                     return Err(e);
                 }
             }
         }
-        eprintln!("[PROXY] target_to_client: NOT shutting down KCP send (avoid smux full close)");
-        eprintln!("[PROXY] target_to_client: Complete");
+        tracing::debug!("target_to_client: NOT shutting down KCP send (avoid smux full close)");
+        tracing::debug!("target_to_client: Complete");
         Ok::<u64, std::io::Error>(total)
     };
 
-    eprintln!("[PROXY] Launching both relay tasks");
+    tracing::debug!("Launching both relay tasks");
     let result = tokio::try_join!(client_to_target, target_to_client);
 
     match result {
         Ok((sent, received)) => {
-            eprintln!(
-                "[PROXY] Relay complete: {} bytes to target, {} bytes from target",
-                sent, received
+            tracing::info!(
+                bytes_out = sent,
+                bytes_in = received,
+                "Relay complete"
             );
         }
         Err(e) => {
-            eprintln!("[PROXY] Relay error: {}", e);
+            tracing::error!(error = %e, "Relay error");
             return Err(e.into());
         }
     }
@@ -220,11 +249,11 @@ async fn connect_target(
 ) -> Result<tokio::net::TcpStream, Box<dyn std::error::Error + Send + Sync>> {
     match target {
         TargetSpec::Addr(addr) => {
-            eprintln!("Connecting to {}", addr);
+            tracing::debug!(target_addr = %addr, "Connecting to target");
             Ok(tokio::net::TcpStream::connect(addr).await?)
         }
         TargetSpec::Domain(domain, port) => {
-            eprintln!("Connecting to {}:{}", domain, port);
+            tracing::debug!(target_addr = %format!("{}:{}", domain, port), "Connecting to target");
             let addrs = tokio::net::lookup_host((domain.as_str(), port)).await?;
             Ok(connect_any(addrs).await?)
         }
