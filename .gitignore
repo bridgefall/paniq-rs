@@ -25,3 +25,6 @@ target
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/target/
+
+# E2E test logs
+e2e-logs/

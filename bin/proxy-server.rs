@@ -128,23 +128,84 @@ async fn handle_stream(
 
     let mut target_stream = connect_target(target).await?;
 
-    // Relay data bidirectionally - use tokio::io::copy like the test
+    // Manual relay instead of tokio::io::copy to handle half-close properly
+    eprintln!("[PROXY] Starting bidirectional relay");
     let (mut target_read, mut target_write) = target_stream.split();
 
     let client_to_target = async {
-        tokio::io::copy(recv, &mut target_write).await?;
+        eprintln!("[PROXY] client_to_target: Starting");
+        let mut buf = vec![0u8; 8192];
+        let mut total = 0u64;
+        loop {
+            match recv.read(&mut buf).await {
+                Ok(0) => {
+                    eprintln!(
+                        "[PROXY] client_to_target: Got EOF from KCP recv, {} bytes total",
+                        total
+                    );
+                    break;
+                }
+                Ok(n) => {
+                    eprintln!("[PROXY] client_to_target: Read {} bytes from KCP", n);
+                    target_write.write_all(&buf[..n]).await?;
+                    total += n as u64;
+                }
+                Err(e) => {
+                    eprintln!("[PROXY] client_to_target: Read error: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        eprintln!("[PROXY] client_to_target: Shutting down TCP write");
         target_write.shutdown().await?;
-        Ok::<(), std::io::Error>(())
+        eprintln!("[PROXY] client_to_target: Complete");
+        Ok::<u64, std::io::Error>(total)
     };
 
     let target_to_client = async {
-        tokio::io::copy(&mut target_read, send).await?;
-        send.shutdown().await?;
-        Ok::<(), std::io::Error>(())
+        eprintln!("[PROXY] target_to_client: Starting");
+        let mut buf = vec![0u8; 8192];
+        let mut total = 0u64;
+        loop {
+            match target_read.read(&mut buf).await {
+                Ok(0) => {
+                    eprintln!(
+                        "[PROXY] target_to_client: Got EOF from TCP read, {} bytes total",
+                        total
+                    );
+                    break;
+                }
+                Ok(n) => {
+                    eprintln!("[PROXY] target_to_client: Read {} bytes from TCP", n);
+                    send.write_all(&buf[..n]).await?;
+                    total += n as u64;
+                }
+                Err(e) => {
+                    eprintln!("[PROXY] target_to_client: Read error: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+        eprintln!("[PROXY] target_to_client: NOT shutting down KCP send (avoid smux full close)");
+        eprintln!("[PROXY] target_to_client: Complete");
+        Ok::<u64, std::io::Error>(total)
     };
 
-    let _ = tokio::try_join!(client_to_target, target_to_client)?;
-    eprintln!("Relay finished");
+    eprintln!("[PROXY] Launching both relay tasks");
+    let result = tokio::try_join!(client_to_target, target_to_client);
+
+    match result {
+        Ok((sent, received)) => {
+            eprintln!(
+                "[PROXY] Relay complete: {} bytes to target, {} bytes from target",
+                sent, received
+            );
+        }
+        Err(e) => {
+            eprintln!("[PROXY] Relay error: {}", e);
+            return Err(e.into());
+        }
+    }
 
     Ok(())
 }

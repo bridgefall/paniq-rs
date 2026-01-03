@@ -136,12 +136,16 @@ impl RelayConnector for KcpConnector {
         send.write_all(&buf)
             .await
             .map_err(|e| SocksError::Connector(e.to_string()))?;
-        Ok(Box::new(StreamWrapper { send, recv }))
+        Ok(Box::new(StreamWrapper {
+            send: Some(send),
+            recv,
+        }))
     }
 }
 
 struct StreamWrapper {
-    send: paniq::kcp::client::SendStream,
+    // Option lets shutdown be idempotent and avoid closing the smux stream early.
+    send: Option<paniq::kcp::client::SendStream>,
     recv: paniq::kcp::client::RecvStream,
 }
 
@@ -161,20 +165,33 @@ impl AsyncWrite for StreamWrapper {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.send).poll_write(cx, buf)
+        match &mut self.send {
+            Some(send) => std::pin::Pin::new(send).poll_write(cx, buf),
+            None => std::task::Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "kcp send is closed",
+            ))),
+        }
     }
 
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.send).poll_flush(cx)
+        match &mut self.send {
+            Some(send) => std::pin::Pin::new(send).poll_flush(cx),
+            None => std::task::Poll::Ready(Ok(())),
+        }
     }
 
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.send).poll_shutdown(cx)
+        // async_smux treats shutdown as a full close. For SOCKS relay we want
+        // to stop writing without closing the entire stream (no half-close).
+        let _ = cx;
+        self.send = None;
+        std::task::Poll::Ready(Ok(()))
     }
 }
