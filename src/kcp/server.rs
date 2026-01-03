@@ -133,10 +133,11 @@ pub async fn listen(
     framer: Framer,
     config: ServerConfigWrapper,
 ) -> Result<Endpoint, KcpServerError> {
+    let max_payload = config.max_payload.min(config.max_packet_size);
     let rng = framer.rng().clone();
     let server_config = ServerConfig {
         max_packet_size: config.max_packet_size,
-        max_payload: config.max_payload,
+        max_payload,
         transport_replay: config.transport_replay,
         padding_policy: PaddingPolicy {
             enabled: false,
@@ -177,4 +178,3 @@ pub async fn listen(
 
     Ok(endpoint)
 }
-

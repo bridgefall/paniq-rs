@@ -1,11 +1,11 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use tokio::io::AsyncReadExt;
 use paniq::kcp::server::listen;
 use paniq::kcp::server::ServerConfigWrapper;
-use paniq::profile::Profile;
 use paniq::obf::Framer;
+use paniq::profile::Profile;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -15,7 +15,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Map profile config to server config
     let config = ServerConfigWrapper {
-        max_packet_size: profile.kcp.as_ref().map(|k| k.max_packet_size).unwrap_or(1350),
+        max_packet_size: profile
+            .kcp
+            .as_ref()
+            .map(|k| k.max_packet_size)
+            .unwrap_or(1350),
         max_payload: profile.kcp.as_ref().map(|k| k.max_payload).unwrap_or(1200),
         transport_replay: profile.obfuscation.transport_replay,
         idle_timeout_secs: 120,
@@ -42,7 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 }
 
-async fn handle_connection(conn: paniq::kcp::server::IncomingConnection) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn handle_connection(
+    conn: paniq::kcp::server::IncomingConnection,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Convert to server connection
     let mut server_conn = conn.await_connection().await?;
 
@@ -93,7 +99,7 @@ async fn handle_stream(
             let mut port_buf = [0u8; 2];
             recv.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
-            SocketAddr::new(std::net::IpAddr::V4(addr_buf.into()), port)
+            TargetSpec::Addr(SocketAddr::new(std::net::IpAddr::V4(addr_buf.into()), port))
         }
         0x03 => {
             // Domain
@@ -106,11 +112,7 @@ async fn handle_stream(
             let mut port_buf = [0u8; 2];
             recv.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
-            // Resolve domain
-            let addr = tokio::net::lookup_host((&domain[..], port)).await?
-                .next()
-                .ok_or_else(|| format!("No addresses found for {}", domain))?;
-            addr
+            TargetSpec::Domain(domain, port)
         }
         0x04 => {
             // IPv6
@@ -119,29 +121,79 @@ async fn handle_stream(
             let mut port_buf = [0u8; 2];
             recv.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
-            SocketAddr::new(std::net::IpAddr::V6(addr_buf.into()), port)
+            TargetSpec::Addr(SocketAddr::new(std::net::IpAddr::V6(addr_buf.into()), port))
         }
         _ => return Err(format!("Unknown address type: {}", addr_type).into()),
     };
 
-    eprintln!("Connecting to {}", target);
+    let mut target_stream = connect_target(target).await?;
 
-    // Connect to target
-    let mut target_stream = tokio::net::TcpStream::connect(target).await?;
+    // Relay data bidirectionally - use tokio::io::copy like the test
+    let (mut target_read, mut target_write) = target_stream.split();
 
-    // Relay data bidirectionally
-    let (mut target_read, mut target_write) = tokio::io::split(&mut target_stream);
+    let client_to_target = async {
+        tokio::io::copy(recv, &mut target_write).await?;
+        target_write.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
 
-    let (res1, res2) = tokio::join!(
-        tokio::io::copy(recv, &mut target_write),
-        tokio::io::copy(&mut target_read, send)
-    );
+    let target_to_client = async {
+        tokio::io::copy(&mut target_read, send).await?;
+        send.shutdown().await?;
+        Ok::<(), std::io::Error>(())
+    };
 
-    let sent = res1.unwrap_or(0);
-    let recv = res2.unwrap_or(0);
-    eprintln!("Relay finished: {} bytes sent, {} bytes received", sent, recv);
+    let _ = tokio::try_join!(client_to_target, target_to_client)?;
+    eprintln!("Relay finished");
 
     Ok(())
+}
+
+enum TargetSpec {
+    Addr(SocketAddr),
+    Domain(String, u16),
+}
+
+async fn connect_target(
+    target: TargetSpec,
+) -> Result<tokio::net::TcpStream, Box<dyn std::error::Error + Send + Sync>> {
+    match target {
+        TargetSpec::Addr(addr) => {
+            eprintln!("Connecting to {}", addr);
+            Ok(tokio::net::TcpStream::connect(addr).await?)
+        }
+        TargetSpec::Domain(domain, port) => {
+            eprintln!("Connecting to {}:{}", domain, port);
+            let addrs = tokio::net::lookup_host((domain.as_str(), port)).await?;
+            Ok(connect_any(addrs).await?)
+        }
+    }
+}
+
+async fn connect_any<I>(addrs: I) -> Result<tokio::net::TcpStream, std::io::Error>
+where
+    I: IntoIterator<Item = SocketAddr>,
+{
+    let mut last_err = None;
+    let mut found = false;
+    for addr in addrs {
+        found = true;
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            if found {
+                "all connection attempts failed"
+            } else {
+                "no addresses found"
+            },
+        )
+    }))
 }
 
 struct Args {

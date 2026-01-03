@@ -21,6 +21,15 @@ use crate::obf::{Framer, MessageType, SharedRng};
 // Import kcp types - kcp-rs library is named "kcp" internally
 use kcp::Kcp;
 
+const TRANSPORT_LEN_FIELD: usize = 2;
+const TRANSPORT_COUNTER_FIELD: usize = 8;
+
+fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay: bool) -> u32 {
+    let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
+    let payload_budget = max_payload.min(max_packet_size);
+    payload_budget.saturating_sub(overhead).max(1) as u32
+}
+
 /// KCP session state.
 pub struct SessionState {
     /// Peer address
@@ -227,7 +236,12 @@ impl KcpServer {
         // Create and pin KCP instance (required by kcp-rs)
         let mut kcp = Box::pin(Kcp::new(conv_id));
         kcp.as_mut().initialize();
-        kcp.as_mut().set_mtu(self.config.max_packet_size as u32)?;
+        let mtu = compute_kcp_mtu(
+            self.config.max_packet_size,
+            self.config.max_payload,
+            self.config.transport_replay,
+        );
+        kcp.as_mut().set_mtu(mtu)?;
         kcp.as_mut().set_nodelay(true, 10, 2, true);
         kcp.as_mut().set_stream(true); // Match client stream mode
 
@@ -408,7 +422,12 @@ async fn udp_send_loop(
         let payload = match payload {
             Ok(p) => p,
             Err(e) => {
-                error!("Failed to build transport payload: {}", e);
+                error!(
+                    "Failed to build transport payload (kcp_len={}, max_payload={}): {}",
+                    kcp_bytes.len(),
+                    config.max_payload,
+                    e
+                );
                 continue;
             }
         };
@@ -464,7 +483,12 @@ async fn udp_send_loop_client(
         let payload = match payload {
             Ok(p) => p,
             Err(e) => {
-                error!("Failed to build transport payload: {}", e);
+                error!(
+                    "Failed to build transport payload (kcp_len={}, max_payload={}): {}",
+                    kcp_bytes.len(),
+                    config.max_payload,
+                    e
+                );
                 continue;
             }
         };
@@ -602,7 +626,12 @@ impl KcpClient {
         // Create and pin KCP instance (required by kcp-rs)
         let mut kcp = Box::pin(Kcp::new(conv_id));
         kcp.as_mut().initialize();
-        kcp.as_mut().set_mtu(self.config.max_packet_size as u32)?;
+        let mtu = compute_kcp_mtu(
+            self.config.max_packet_size,
+            self.config.max_payload,
+            self.config.transport_replay,
+        );
+        kcp.as_mut().set_mtu(mtu)?;
         kcp.as_mut().set_nodelay(true, 10, 2, true);
         kcp.as_mut().set_stream(true);
 

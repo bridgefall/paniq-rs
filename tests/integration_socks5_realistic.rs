@@ -2,28 +2,22 @@
 #![cfg(feature = "kcp")]
 
 use std::net::{SocketAddr, TcpListener};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener as AsyncTcpListener;
-use tokio::sync::oneshot;
+use tokio::process::Command;
 use tokio::task::JoinHandle;
-
-use async_trait::async_trait;
-
-use paniq::kcp::client::{connect, ClientConfigWrapper};
-use paniq::kcp::server::{listen, ServerConfigWrapper};
-use paniq::obf::Framer;
-use paniq::profile::Profile;
-use paniq::socks5::{AuthConfig, RelayConnector, Socks5Server, SocksError, TargetAddr};
+use tokio::time::timeout;
 
 fn get_free_port() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.local_addr().unwrap().port()
 }
 
-async fn start_http_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+async fn start_http_server() -> (SocketAddr, JoinHandle<()>) {
     let listener = AsyncTcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -47,304 +41,7 @@ async fn start_http_server() -> (std::net::SocketAddr, tokio::task::JoinHandle<(
     (addr, handle)
 }
 
-fn spawn_proxy_server(
-    port: u16,
-    profile_path: PathBuf,
-) -> (
-    JoinHandle<()>,
-    oneshot::Receiver<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
-) {
-    let (ready_tx, ready_rx) = oneshot::channel();
-    let handle = tokio::spawn(async move {
-        if let Err(err) = run_proxy_server(port, profile_path, ready_tx).await {
-            eprintln!("proxy-server task error: {err}");
-        }
-    });
-    (handle, ready_rx)
-}
-
-async fn run_proxy_server(
-    port: u16,
-    profile_path: PathBuf,
-    ready: oneshot::Sender<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let profile = Profile::from_file(&profile_path)?;
-    let framer = Framer::new(profile.obf_config())?;
-    let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
-    let server_config = ServerConfigWrapper::default();
-    let endpoint = listen(addr, framer, server_config).await?;
-
-    let _ = ready.send(Ok(()));
-
-    while let Some(incoming) = endpoint.accept().await {
-        tokio::spawn(async move {
-            if let Ok(mut conn) = incoming.await_connection().await {
-                tokio::spawn(async move {
-                    while let Ok((send, recv)) = conn.accept_bi().await {
-                        tokio::spawn(async move {
-                            let _ = handle_proxy_stream(send, recv).await;
-                        });
-                    }
-                });
-            }
-        });
-    }
-
-    Ok(())
-}
-
-async fn handle_proxy_stream(
-    mut send: paniq::kcp::client::SendStream,
-    mut recv: paniq::kcp::client::RecvStream,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let target = read_proxy_target(&mut recv).await?;
-    let mut target = tokio::net::TcpStream::connect(&target).await?;
-    target.set_nodelay(true)?;
-
-    let (mut target_reader, mut target_writer) = target.split();
-
-    let client_to_target = async {
-        tokio::io::copy(&mut recv, &mut target_writer).await?;
-        target_writer.shutdown().await?;
-        Ok::<(), std::io::Error>(())
-    };
-
-    let target_to_client = async {
-        tokio::io::copy(&mut target_reader, &mut send).await?;
-        send.shutdown().await?;
-        Ok::<(), std::io::Error>(())
-    };
-
-    let _ = tokio::try_join!(client_to_target, target_to_client)?;
-
-    Ok(())
-}
-
-async fn read_proxy_target(
-    recv: &mut paniq::kcp::client::RecvStream,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let mut header = [0u8; 2];
-    recv.read_exact(&mut header).await?;
-    let version = header[0];
-    let addr_type = header[1];
-
-    if version != 0x01 {
-        return Err(format!("unsupported protocol version: {}", version).into());
-    }
-
-    let target = match addr_type {
-        0x01 => {
-            let mut buf = [0u8; 4];
-            recv.read_exact(&mut buf).await?;
-            let mut port_buf = [0u8; 2];
-            recv.read_exact(&mut port_buf).await?;
-            let ip = std::net::Ipv4Addr::from(buf);
-            format!("{}:{}", ip, u16::from_be_bytes(port_buf))
-        }
-        0x04 => {
-            let mut buf = [0u8; 16];
-            recv.read_exact(&mut buf).await?;
-            let mut port_buf = [0u8; 2];
-            recv.read_exact(&mut port_buf).await?;
-            let ip = std::net::Ipv6Addr::from(buf);
-            format!("{}:{}", ip, u16::from_be_bytes(port_buf))
-        }
-        0x03 => {
-            let mut len_buf = [0u8; 1];
-            recv.read_exact(&mut len_buf).await?;
-            let len = len_buf[0] as usize;
-            let mut host = vec![0u8; len];
-            recv.read_exact(&mut host).await?;
-            let mut port_buf = [0u8; 2];
-            recv.read_exact(&mut port_buf).await?;
-            let host = String::from_utf8(host)?;
-            format!("{}:{}", host, u16::from_be_bytes(port_buf))
-        }
-        other => return Err(format!("unsupported address type: {}", other).into()),
-    };
-
-    Ok(target)
-}
-
-fn spawn_socks5d(
-    port: u16,
-    profile_path: PathBuf,
-) -> (
-    JoinHandle<()>,
-    oneshot::Receiver<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
-) {
-    let (ready_tx, ready_rx) = oneshot::channel();
-    let handle = tokio::spawn(async move {
-        if let Err(err) = run_socks5d(port, profile_path, ready_tx).await {
-            eprintln!("socks5d task error: {err}");
-        }
-    });
-    (handle, ready_rx)
-}
-
-async fn run_socks5d(
-    port: u16,
-    profile_path: PathBuf,
-    ready: oneshot::Sender<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let profile = Profile::from_file(&profile_path)?;
-    let obf_config = profile.obf_config();
-    let framer = Framer::new(obf_config.clone()).expect("framer");
-
-    let server_addr = profile.proxy_addr.parse()?;
-    let client_sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
-    let client_config = ClientConfigWrapper::default();
-    let (_ep, conn) = connect(
-        client_sock,
-        server_addr,
-        framer,
-        client_config,
-        b"paniq",
-        "paniq",
-    )
-    .await?;
-    let connector = TestKcpConnector { conn };
-
-    let auth = AuthConfig::default();
-    let server = Arc::new(Socks5Server::new(connector, auth));
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    let _ = ready.send(Ok(()));
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        let server = server.clone();
-        eprintln!("accepted {addr}");
-        tokio::spawn(async move {
-            let _ = server.serve_stream(stream).await;
-        });
-    }
-}
-
-struct TestKcpConnector {
-    conn: paniq::kcp::client::Connection,
-}
-
-#[async_trait]
-impl RelayConnector for TestKcpConnector {
-    async fn connect(
-        &self,
-        target: &TargetAddr,
-    ) -> Result<Box<dyn paniq::socks5::IoStream + Send>, SocksError> {
-        let mut buf = Vec::new();
-        buf.push(0x01); // protocol version
-
-        let port = match target {
-            TargetAddr::Ip(addr) => {
-                match addr.ip() {
-                    std::net::IpAddr::V4(ipv4) => {
-                        buf.push(0x01); // IPv4
-                        buf.extend_from_slice(&ipv4.octets());
-                    }
-                    std::net::IpAddr::V6(ipv6) => {
-                        buf.push(0x04); // IPv6
-                        buf.extend_from_slice(&ipv6.octets());
-                    }
-                }
-                addr.port()
-            }
-            TargetAddr::Domain(host, port) => {
-                buf.push(0x03); // Domain
-                buf.push(host.len() as u8);
-                buf.extend_from_slice(host.as_bytes());
-                *port
-            }
-        };
-
-        buf.extend_from_slice(&port.to_be_bytes());
-
-        let (mut send, recv) = self
-            .conn
-            .open_bi()
-            .await
-            .map_err(|e| SocksError::Connector(e.to_string()))?;
-        send.write_all(&buf)
-            .await
-            .map_err(|e| SocksError::Connector(e.to_string()))?;
-        Ok(Box::new(TestStreamWrapper {
-            send: Some(send),
-            recv,
-        }))
-    }
-}
-
-struct TestStreamWrapper {
-    send: Option<paniq::kcp::client::SendStream>,
-    recv: paniq::kcp::client::RecvStream,
-}
-
-impl tokio::io::AsyncRead for TestStreamWrapper {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.recv).poll_read(cx, buf)
-    }
-}
-
-impl tokio::io::AsyncWrite for TestStreamWrapper {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        match &mut self.send {
-            Some(send) => std::pin::Pin::new(send).poll_write(cx, buf),
-            None => std::task::Poll::Ready(Ok(0)),
-        }
-    }
-
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match &mut self.send {
-            Some(send) => std::pin::Pin::new(send).poll_flush(cx),
-            None => std::task::Poll::Ready(Ok(())),
-        }
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        if let Some(send) = &mut self.send {
-            let poll_result = std::pin::Pin::new(send).poll_shutdown(cx);
-            if poll_result.is_ready() {
-                self.send = None;
-            }
-            poll_result
-        } else {
-            std::task::Poll::Ready(Ok(()))
-        }
-    }
-}
-
-#[tokio::test]
-async fn test_real_binaries_curl() {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    // Start HTTP server first so we know target address
-    let (http_addr, http_handle) = start_http_server().await;
-
-    // 1. Setup ports and profile
-    let proxy_port = get_free_port();
-    let socks_port = get_free_port();
-
-    // We pick a different socks port to avoid conflict if finding free port races?
-    // loop until different?
-    let mut socks_port_final = socks_port;
-    if proxy_port == socks_port {
-        socks_port_final = get_free_port();
-    }
-    let socks_port = socks_port_final;
-
-    println!("Ports: Proxy={}, Socks={}", proxy_port, socks_port);
-
-    // Create temp profile
+fn write_temp_profile(proxy_port: u16) -> PathBuf {
     let profile_content = format!(
         r#"{{
   "name": "test_profile",
@@ -366,42 +63,116 @@ async fn test_real_binaries_curl() {
         proxy_port
     );
 
-    let profile_path = PathBuf::from(&manifest_dir).join("test_profile_gen.json");
-    std::fs::write(&profile_path, profile_content).expect("Failed to write profile");
+    let filename = format!(
+        "paniq_test_profile_{}_{}.json",
+        std::process::id(),
+        rand::random::<u64>()
+    );
+    let path = std::env::temp_dir().join(filename);
+    std::fs::write(&path, profile_content).expect("Failed to write profile");
+    path
+}
 
-    // 2. Start Proxy Server inside this process (shares KCP registry)
-    println!("Starting proxy-server...");
-    let (proxy_handle, proxy_ready) = spawn_proxy_server(proxy_port, profile_path.clone());
-    proxy_ready
-        .await
-        .expect("proxy startup channel")
-        .expect("proxy startup failed");
+async fn spawn_proxy_binary(
+    proxy_port: u16,
+    profile_path: &Path,
+) -> Result<tokio::process::Child, Box<dyn std::error::Error + Send + Sync>> {
+    let proxy_bin = env!("CARGO_BIN_EXE_proxy-server");
+    let child = Command::new(proxy_bin)
+        .arg("-l")
+        .arg(format!("127.0.0.1:{}", proxy_port))
+        .arg("-p")
+        .arg(profile_path)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    Ok(child)
+}
 
-    // Give it a moment to bind
-    tokio::time::sleep(Duration::from_millis(200)).await;
+async fn spawn_socks_binary(
+    socks_port: u16,
+    profile_path: &Path,
+) -> Result<tokio::process::Child, Box<dyn std::error::Error + Send + Sync>> {
+    let socks_bin = env!("CARGO_BIN_EXE_socks5d");
+    let child = Command::new(socks_bin)
+        .arg("-l")
+        .arg(format!("127.0.0.1:{}", socks_port))
+        .arg("-p")
+        .arg(profile_path)
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    Ok(child)
+}
 
-    // 3. Start Socks5d
-    println!("Starting socks5d...");
-    let (socks_handle, socks_ready) = spawn_socks5d(socks_port, profile_path.clone());
-    socks_ready
-        .await
-        .expect("socks startup channel")
-        .expect("socks startup failed");
+async fn wait_for_tcp(
+    addr: SocketAddr,
+    timeout_after: Duration,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let deadline = Instant::now() + timeout_after;
+    loop {
+        match tokio::net::TcpStream::connect(addr).await {
+            Ok(stream) => {
+                drop(stream);
+                return Ok(());
+            }
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(err.into());
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+}
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+async fn read_socks5_reply(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut header = [0u8; 4];
+    stream.read_exact(&mut header).await?;
+    if header[0] != 0x05 {
+        return Err(format!("unexpected socks version: {}", header[0]).into());
+    }
+    if header[1] != 0x00 {
+        return Err(format!("socks connect failed: {}", header[1]).into());
+    }
 
-    // 5. Run SOCKS5 handshake + HTTP request manually
-    println!("Running SOCKS5 client...");
+    match header[3] {
+        0x01 => {
+            let mut addr = [0u8; 4];
+            stream.read_exact(&mut addr).await?;
+        }
+        0x04 => {
+            let mut addr = [0u8; 16];
+            stream.read_exact(&mut addr).await?;
+        }
+        0x03 => {
+            let mut len = [0u8; 1];
+            stream.read_exact(&mut len).await?;
+            let mut addr = vec![0u8; len[0] as usize];
+            stream.read_exact(&mut addr).await?;
+        }
+        other => return Err(format!("unexpected address type: {}", other).into()),
+    }
 
-    // Retry loop to account for "Listening" race or initial connect latency
-    let mut success = false;
-    for i in 0..3 {
-        let start = std::time::Instant::now();
+    let mut port = [0u8; 2];
+    stream.read_exact(&mut port).await?;
+    Ok(())
+}
+
+async fn run_socks5_request(
+    socks_addr: SocketAddr,
+    target_host: &str,
+    target_port: u16,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut last_err: Option<Box<dyn std::error::Error + Send + Sync>> = None;
+
+    for _ in 0..3 {
         let attempt = async {
-            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", socks_port)).await?;
+            let mut stream = tokio::net::TcpStream::connect(socks_addr).await?;
             stream.set_nodelay(true)?;
 
-            // SOCKS5 greeting: no authentication
             stream.write_all(&[0x05, 0x01, 0x00]).await?;
             let mut resp = [0u8; 2];
             stream.read_exact(&mut resp).await?;
@@ -409,40 +180,22 @@ async fn test_real_binaries_curl() {
                 return Err("unexpected method selection".into());
             }
 
-            // CONNECT request to HTTP server
-            let mut request = vec![0x05, 0x01, 0x00];
-            match http_addr.ip() {
-                std::net::IpAddr::V4(ipv4) => {
-                    request.push(0x01);
-                    request.extend_from_slice(&ipv4.octets());
-                }
-                std::net::IpAddr::V6(ipv6) => {
-                    request.push(0x04);
-                    request.extend_from_slice(&ipv6.octets());
-                }
-            }
-            request.extend_from_slice(&http_addr.port().to_be_bytes());
+            let mut request = vec![0x05, 0x01, 0x00, 0x03];
+            request.push(target_host.len() as u8);
+            request.extend_from_slice(target_host.as_bytes());
+            request.extend_from_slice(&target_port.to_be_bytes());
             stream.write_all(&request).await?;
 
-            let mut reply = [0u8; 10];
-            stream.read_exact(&mut reply).await?;
-            if reply[1] != 0x00 {
-                return Err("socks connect failed".into());
-            }
+            read_socks5_reply(&mut stream).await?;
 
-            // Send HTTP GET request
-            let host = match http_addr.ip() {
-                std::net::IpAddr::V4(ipv4) => ipv4.to_string(),
-                std::net::IpAddr::V6(ipv6) => format!("[{ipv6}]"),
-            };
             let http_req = format!(
                 "GET / HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-                host
+                target_host
             );
             stream.write_all(http_req.as_bytes()).await?;
 
             let mut buf = vec![0u8; 1024];
-            let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf)).await??;
+            let n = timeout(Duration::from_secs(5), stream.read(&mut buf)).await??;
             let response = String::from_utf8_lossy(&buf[..n]);
             if !response.contains("200 OK") || !response.contains("ok") {
                 return Err("unexpected http response".into());
@@ -452,26 +205,52 @@ async fn test_real_binaries_curl() {
         }
         .await;
 
-        let duration = start.elapsed();
-        println!("Attempt #{} took {:?}", i, duration);
-
         match attempt {
-            Ok(()) => {
-                success = true;
-                break;
-            }
+            Ok(()) => return Ok(()),
             Err(err) => {
-                println!("SOCKS attempt failed: {err}");
+                last_err = Some(err);
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
     }
 
-    // Cleanup profile
-    let _ = std::fs::remove_file(profile_path);
-    socks_handle.abort();
-    proxy_handle.abort();
-    http_handle.abort();
+    Err(last_err.unwrap_or_else(|| "unknown socks5 failure".into()))
+}
 
-    assert!(success, "Curl failed to retrieve local response via SOCKS5");
+#[tokio::test]
+async fn test_real_binaries_curl() {
+    let (http_addr, http_handle) = start_http_server().await;
+    let proxy_port = get_free_port();
+    let socks_port = get_free_port();
+
+    let profile_path = write_temp_profile(proxy_port);
+
+    let mut proxy = spawn_proxy_binary(proxy_port, &profile_path)
+        .await
+        .expect("spawn proxy-server");
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut socks = spawn_socks_binary(socks_port, &profile_path)
+        .await
+        .expect("spawn socks5d");
+
+    let socks_addr: SocketAddr = format!("127.0.0.1:{}", socks_port).parse().unwrap();
+    let readiness = wait_for_tcp(socks_addr, Duration::from_secs(5)).await;
+
+    let test_result = match readiness {
+        Ok(()) => run_socks5_request(socks_addr, "localhost", http_addr.port()).await,
+        Err(err) => Err(err),
+    };
+
+    let _ = socks.kill().await;
+    let _ = socks.wait().await;
+    let _ = proxy.kill().await;
+    let _ = proxy.wait().await;
+    http_handle.abort();
+    let _ = std::fs::remove_file(profile_path);
+
+    if let Err(err) = test_result {
+        panic!("SOCKS5 request failed: {err}");
+    }
 }

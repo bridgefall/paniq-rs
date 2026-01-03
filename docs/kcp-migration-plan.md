@@ -246,7 +246,7 @@ All three issues were **code bugs**, not profile or configuration issues. The or
    - Core roundtrip test passing (`kcp_round_trip_over_obfuscating_socket`)
    - End-to-end data flow verified (client write → UDP → server → echo → client read)
 
-### ✅ Phase 3: Integration Tests - 3/3 PASSING (100%)
+### ⚠️ Phase 3: Integration Tests - Revalidation Needed
 
 **API Migration Completed:**
 - ✅ All tests migrated to the current API (`connect()`, `listen()`, `ClientConfigWrapper`, `ServerConfigWrapper`)
@@ -262,39 +262,24 @@ connect(socket, addr, framer, ClientConfigWrapper::default(), b"paniq", "paniq")
 listen(addr, framer, ServerConfigWrapper::default())
 ```
 
-**Test Status:**
+**Test Status (updated):**
 
-1. ✅ **tests/integration_socks5_kcp.rs::integration_socks5_over_kcp** - **PASSING**
-   - Test time: 0.11s
-   - What it proves: End-to-end SOCKS5 proxy over KCP works correctly
+1. ✅ **tests/integration_socks5_kcp.rs::integration_socks5_over_kcp**
+   - In-process test of SOCKS5 over KCP. Useful, but not production wiring.
 
-2. ✅ **tests/integration_socks5_kcp.rs::soak_socks5_over_kcp_30s** - **PASSING**
-   - Test time: 30.22s
-   - What it proves: Production stability under sustained load
+2. ✅ **tests/integration_socks5_kcp.rs::soak_socks5_over_kcp_30s**
+   - In-process soak test. Does not exercise binaries.
 
-3. ✅ **tests/integration_socks5_realistic.rs::test_real_binaries_curl** - **PASSING**
-   - Test time: 0.41s
-   - What it proves: Real binaries operate correctly over KCP with curl
+3. ⚠️ **tests/integration_socks5_realistic.rs::test_real_binaries_curl**
+   - Now spawns real `proxy-server` + `socks5d` binaries (production wiring).
+   - Must be re-run after the test rewrite and proxy DNS fix.
 
-**Final Test Results (2026-01-02):**
-```bash
-cargo test --features "kcp,socks5" --test integration_socks5_kcp --test integration_socks5_realistic
-
-✅ integration_socks5_over_kcp ... ok (0.11s)
-✅ soak_socks5_over_kcp_30s ... ok (30.22s)
-✅ test_real_binaries_curl ... ok (0.41s)
-
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured
-```
-
-### ✅ Overall Status: COMPLETE (100%)
-
-**Conclusion**: The KCP migration is complete. Core transport + async_smux are fully integrated and all integration tests are green (3/3), including the 30-second soak and realistic binary validation.
+**Status:** Not marked complete until the real-binaries test and a manual curl pass.
 
 ### 📅 Timeline
 
 - **2025-12-29**: Phase 1 UDP transport complete
 - **2026-01-01**: Phase 2 async_smux integration complete
-- **2026-01-02**: Phase 3 integration tests green (3/3) and migration marked COMPLETE
+- **2026-01-02**: Phase 3 tests rewritten to use binaries; validation pending
 
 See `KCP_MIGRATION_COMPLETE.md` and `INTEGRATION_TESTS_FIXED.md` for detailed technical notes.

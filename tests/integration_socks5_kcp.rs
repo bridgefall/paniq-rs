@@ -295,16 +295,32 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
     );
     socks_conn.write_all(http_req.as_bytes()).await.unwrap();
 
-    // Read HTTP response
-    let mut http_resp = vec![0u8; 1024];
-    let n = timeout(Duration::from_secs(15), socks_conn.read(&mut http_resp))
-        .await
-        .unwrap()
-        .unwrap();
-    let response = String::from_utf8_lossy(&http_resp[..n]);
+    // Read HTTP response (loop until we see markers or EOF)
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut http_resp = Vec::with_capacity(1024);
+    let mut buf = [0u8; 512];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let n = timeout(remaining, socks_conn.read(&mut buf))
+            .await
+            .unwrap()
+            .unwrap();
+        if n == 0 {
+            break;
+        }
+        http_resp.extend_from_slice(&buf[..n]);
+        let response = String::from_utf8_lossy(&http_resp);
+        if response.contains("200 OK") && response.contains("ok") {
+            break;
+        }
+    }
+    let response = String::from_utf8_lossy(&http_resp);
 
-    assert!(response.contains("200 OK"));
-    assert!(response.contains("ok"));
+    assert!(response.contains("200 OK"), "response missing 200 OK: {response}");
+    assert!(response.contains("ok"), "response missing body: {response}");
 
     let elapsed = latency_start.elapsed();
     assert!(

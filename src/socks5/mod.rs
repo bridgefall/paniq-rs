@@ -233,28 +233,14 @@ where
     let (mut remote_read, mut remote_write) = tokio::io::split(remote);
 
     let client_to_remote = async {
-        let mut buf = [0u8; 4096];
-        loop {
-            match client_read.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => remote_write.write_all(&buf[..n]).await?,
-                Err(e) => return Err(e),
-            }
-        }
-        drop(remote_write);
+        tokio::io::copy(&mut client_read, &mut remote_write).await?;
+        remote_write.shutdown().await?;
         Ok::<(), std::io::Error>(())
     };
 
     let remote_to_client = async {
-        let mut buf = [0u8; 4096];
-        loop {
-            match remote_read.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => client_write.write_all(&buf[..n]).await?,
-                Err(e) => return Err(e),
-            }
-        }
-        drop(client_write);
+        tokio::io::copy(&mut remote_read, &mut client_write).await?;
+        client_write.shutdown().await?;
         Ok::<(), std::io::Error>(())
     };
 

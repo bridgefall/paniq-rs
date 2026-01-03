@@ -61,7 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let server = server.clone();
         eprintln!("accepted {addr}");
         tokio::spawn(async move {
-            let _ = server.serve_stream(stream).await;
+            if let Err(err) = server.serve_stream(stream).await {
+                eprintln!("socks5 stream error: {err}");
+            }
         });
     }
 }
