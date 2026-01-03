@@ -144,7 +144,7 @@ echo "socks5d PID: $SOCKS_PID" | tee -a "$TEST_LOG"
 # Wait for socks5d to be ready
 echo "Waiting for socks5d to start..." | tee -a "$TEST_LOG"
 for i in {1..30}; do
-    if grep -q "listening on" "$SOCKS_LOG" 2>/dev/null; then
+    if grep -q "daemon listening" "$SOCKS_LOG" 2>/dev/null; then
         echo "✅ socks5d is ready" | tee -a "$TEST_LOG"
         break
     fi
@@ -156,7 +156,7 @@ for i in {1..30}; do
     sleep 0.5
 done
 
-if ! grep -q "listening on" "$SOCKS_LOG" 2>/dev/null; then
+if ! grep -q "daemon listening" "$SOCKS_LOG" 2>/dev/null; then
     echo "❌ FAILED: socks5d didn't start in time" | tee -a "$TEST_LOG"
     cat "$SOCKS_LOG" | tee -a "$TEST_LOG"
     exit 1
