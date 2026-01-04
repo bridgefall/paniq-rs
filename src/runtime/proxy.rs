@@ -232,43 +232,84 @@ async fn handle_stream(
 
     let mut target_stream = connect_target(target).await?;
 
-    // Bidirectional relay - same logic as production proxy-server
+    // Bidirectional relay with optimized buffer sizes for high throughput.
+    // 32KB buffers reduce syscalls and improve throughput compared to 8KB.
+    //
+    // Both directions run concurrently and must complete for cleanup.
+    // Expected errors (BrokenPipe, ConnectionReset, NotConnected, ConnectionAborted)
+    // are converted to Ok(()) so they don't cause try_join! to fail early.
     let (mut target_read, mut target_write) = target_stream.split();
 
+    fn is_expected_close_error(e: &std::io::Error) -> bool {
+        matches!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::ConnectionAborted
+        )
+    }
+
     let client_to_target = async {
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; 32768];
         loop {
             match recv.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    target_write.write_all(&buf[..n]).await?;
+                    if let Err(e) = target_write.write_all(&buf[..n]).await {
+                        // Treat expected close errors as clean shutdown
+                        if is_expected_close_error(&e) {
+                            break;
+                        }
+                        return Err(e);
+                    }
                 }
                 Err(e) => {
+                    // Treat expected close errors as clean shutdown
+                    if is_expected_close_error(&e) {
+                        break;
+                    }
                     return Err(e);
                 }
             }
         }
-        target_write.shutdown().await?;
-        Ok::<u64, std::io::Error>(0)
+        // Best-effort shutdown of target write side
+        let _ = target_write.shutdown().await;
+        Ok::<(), std::io::Error>(())
     };
 
     let target_to_client = async {
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; 32768];
         loop {
             match target_read.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    send.write_all(&buf[..n]).await?;
+                    if let Err(e) = send.write_all(&buf[..n]).await {
+                        // Treat expected close errors as clean shutdown
+                        if is_expected_close_error(&e) {
+                            break;
+                        }
+                        return Err(e);
+                    }
                 }
                 Err(e) => {
+                    // Treat expected close errors as clean shutdown
+                    if is_expected_close_error(&e) {
+                        break;
+                    }
                     return Err(e);
                 }
             }
         }
-        // NOTE: We do NOT shutdown the KCP send side to avoid smux full close
-        Ok::<u64, std::io::Error>(0)
+        // Shutdown KCP send side to propagate EOF to client.
+        // This ensures the client sees when the target closes.
+        let _ = send.shutdown().await;
+        Ok::<(), std::io::Error>(())
     };
 
+    // try_join! ensures both directions complete (for cleanup) while
+    // propagating unexpected errors. Expected close errors are converted
+    // to Ok(()) above, so they don't cause early cancellation.
     tokio::try_join!(client_to_target, target_to_client)?;
     Ok(())
 }
@@ -283,10 +324,14 @@ async fn connect_target(
     target: TargetSpec,
 ) -> Result<tokio::net::TcpStream, Box<dyn std::error::Error + Send + Sync>> {
     match target {
-        TargetSpec::Addr(addr) => Ok(tokio::net::TcpStream::connect(addr).await?),
+        TargetSpec::Addr(addr) => {
+            let stream = tokio::net::TcpStream::connect(addr).await?;
+            Ok(optimize_tcp_stream(stream)?)
+        }
         TargetSpec::Domain(domain, port) => {
             let addrs = tokio::net::lookup_host((domain.as_str(), port)).await?;
-            Ok(connect_any(addrs).await?)
+            // connect_any already applies optimize_tcp_stream
+            connect_any(addrs).await
         }
     }
 }
@@ -302,7 +347,7 @@ where
 
     for addr in &addrs {
         match tokio::net::TcpStream::connect(addr).await {
-            Ok(stream) => return Ok(stream),
+            Ok(stream) => return Ok(optimize_tcp_stream(stream)?),
             Err(_) => continue,
         }
     }
@@ -315,4 +360,15 @@ where
             format!("all connection attempts failed for addresses: {:?}", addrs)
         },
     )))
+}
+
+/// Apply TCP optimizations for high-throughput proxy connections.
+///
+/// These optimizations match Go's net.Dialer behavior and are critical
+/// for achieving comparable throughput:
+/// - TCP_NODELAY disables Nagle's algorithm (200ms delay for small packets)
+fn optimize_tcp_stream(stream: tokio::net::TcpStream) -> Result<tokio::net::TcpStream, std::io::Error> {
+    // Disable Nagle's algorithm - critical for low-latency proxy traffic
+    stream.set_nodelay(true)?;
+    Ok(stream)
 }
