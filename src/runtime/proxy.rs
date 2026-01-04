@@ -12,6 +12,58 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+// ===== Protocol Constants =====
+
+/// Custom proxy protocol version (currently 0x01)
+const PROTOCOL_VERSION: u8 = 0x01;
+
+/// Address type: IPv4 (matches SOCKS5 ATYP)
+const ADDR_TYPE_IPV4: u8 = 0x01;
+
+/// Address type: Domain name (matches SOCKS5 ATYP)
+const ADDR_TYPE_DOMAIN: u8 = 0x03;
+
+/// Address type: IPv6 (matches SOCKS5 ATYP)
+const ADDR_TYPE_IPV6: u8 = 0x04;
+
+/// Size of an IPv4 address in bytes (std::net::Ipv4Addr::OCTETS len)
+const IPV4_ADDR_SIZE: usize = 4;
+
+/// Size of an IPv6 address in bytes (std::net::Ipv6Addr::OCTETS len)
+const IPV6_ADDR_SIZE: usize = 16;
+
+/// Size of a port number in bytes (u16)
+const PORT_SIZE: usize = 2;
+
+/// Size of a domain length prefix in bytes (u8)
+const DOMAIN_LEN_SIZE: usize = 1;
+
+// ===== Buffer Sizes =====
+
+/// Relay buffer size for bidirectional data transfer (32 KB).
+/// Chosen to balance throughput vs memory per stream.
+const RELAY_BUFFER_SIZE: usize = 32768;
+
+// ===== Default Configuration Values =====
+
+/// Default maximum KCP packet size in bytes
+const DEFAULT_MAX_PACKET_SIZE: usize = 1350;
+
+/// Default maximum KCP payload size in bytes
+const DEFAULT_MAX_PAYLOAD: usize = 1200;
+
+/// Default connection idle timeout in seconds
+const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 120;
+
+/// Default handshake timeout in seconds
+const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 5;
+
+/// Default number of handshake attempts
+const DEFAULT_HANDSHAKE_ATTEMPTS: usize = 3;
+
+/// Default preamble delay in milliseconds
+const DEFAULT_PREAMBLE_DELAY_MS: u64 = 5;
+
 /// Configuration for spawning a proxy server.
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
@@ -65,18 +117,18 @@ impl ProxyHandle {
                 .kcp
                 .as_ref()
                 .map(|k| k.max_packet_size)
-                .unwrap_or(1350),
+                .unwrap_or(DEFAULT_MAX_PACKET_SIZE),
             max_payload: config
                 .profile
                 .kcp
                 .as_ref()
                 .map(|k| k.max_payload)
-                .unwrap_or(1200),
+                .unwrap_or(DEFAULT_MAX_PAYLOAD),
             transport_replay: config.profile.obfuscation.transport_replay,
-            idle_timeout_secs: 120,
-            handshake_timeout_secs: 5,
-            handshake_attempts: 3,
-            preamble_delay_ms: 5,
+            idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+            handshake_timeout_secs: DEFAULT_HANDSHAKE_TIMEOUT_SECS,
+            handshake_attempts: DEFAULT_HANDSHAKE_ATTEMPTS,
+            preamble_delay_ms: DEFAULT_PREAMBLE_DELAY_MS,
         };
 
         let endpoint = listen(config.listen_addr, framer, server_config).await?;
@@ -186,43 +238,43 @@ async fn handle_stream(
     recv.read_exact(&mut buf).await?;
     let version = buf[0];
 
-    if version != 0x01 {
+    if version != PROTOCOL_VERSION {
         return Err(format!("Unsupported protocol version: {}", version).into());
     }
 
     // Read address type
-    let mut addr_type_buf = [0u8; 1];
+    let mut addr_type_buf = [0u8; DOMAIN_LEN_SIZE];
     recv.read_exact(&mut addr_type_buf).await?;
     let addr_type = addr_type_buf[0];
 
     let target = match addr_type {
-        0x01 => {
+        ADDR_TYPE_IPV4 => {
             // IPv4
-            let mut addr_buf = [0u8; 4];
+            let mut addr_buf = [0u8; IPV4_ADDR_SIZE];
             recv.read_exact(&mut addr_buf).await?;
-            let mut port_buf = [0u8; 2];
+            let mut port_buf = [0u8; PORT_SIZE];
             recv.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
             TargetSpec::Addr(SocketAddr::new(std::net::IpAddr::V4(addr_buf.into()), port))
         }
-        0x03 => {
+        ADDR_TYPE_DOMAIN => {
             // Domain
-            let mut len_buf = [0u8; 1];
+            let mut len_buf = [0u8; DOMAIN_LEN_SIZE];
             recv.read_exact(&mut len_buf).await?;
             let len = len_buf[0] as usize;
             let mut domain_buf = vec![0u8; len];
             recv.read_exact(&mut domain_buf).await?;
             let domain = String::from_utf8(domain_buf)?;
-            let mut port_buf = [0u8; 2];
+            let mut port_buf = [0u8; PORT_SIZE];
             recv.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
             TargetSpec::Domain(domain, port)
         }
-        0x04 => {
+        ADDR_TYPE_IPV6 => {
             // IPv6
-            let mut addr_buf = [0u8; 16];
+            let mut addr_buf = [0u8; IPV6_ADDR_SIZE];
             recv.read_exact(&mut addr_buf).await?;
-            let mut port_buf = [0u8; 2];
+            let mut port_buf = [0u8; PORT_SIZE];
             recv.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
             TargetSpec::Addr(SocketAddr::new(std::net::IpAddr::V6(addr_buf.into()), port))
@@ -233,7 +285,7 @@ async fn handle_stream(
     let mut target_stream = connect_target(target).await?;
 
     // Bidirectional relay with optimized buffer sizes for high throughput.
-    // 32KB buffers reduce syscalls and improve throughput compared to 8KB.
+    // RELAY_BUFFER_SIZE (32KB) reduces syscalls and improves throughput vs 8KB.
     //
     // Both directions run concurrently and must complete for cleanup.
     // Expected errors (BrokenPipe, ConnectionReset, NotConnected, ConnectionAborted)
@@ -251,7 +303,7 @@ async fn handle_stream(
     }
 
     let client_to_target = async {
-        let mut buf = vec![0u8; 32768];
+        let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
         loop {
             match recv.read(&mut buf).await {
                 Ok(0) => break,
@@ -279,7 +331,7 @@ async fn handle_stream(
     };
 
     let target_to_client = async {
-        let mut buf = vec![0u8; 32768];
+        let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
         loop {
             match target_read.read(&mut buf).await {
                 Ok(0) => break,
