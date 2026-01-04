@@ -15,7 +15,7 @@ use tracing::{debug, error, info, warn};
 use crate::envelope::client::{client_handshake_async, TokioPacketConn};
 use crate::envelope::padding::PaddingPolicy;
 use crate::envelope::transport::{build_transport_payload, decode_transport_payload};
-use crate::kcp::mux::{run_kcp_pump, system_time_ms, KcpStreamAdapter};
+use crate::kcp::mux::{run_kcp_pump, KcpStreamAdapter};
 use crate::obf::{Framer, MessageType, SharedRng};
 
 // Import kcp types - kcp-rs library is named "kcp" internally
@@ -28,6 +28,12 @@ const TRANSPORT_COUNTER_FIELD: usize = 8;
 // Default 1024 is too small for high-throughput scenarios with multiple concurrent streams
 const SMUX_MAX_TX_QUEUE: usize = 8192;
 const SMUX_MAX_RX_QUEUE: usize = 8192;
+
+// KCP window sizes for high-throughput WAN scenarios
+// Default 32 caps throughput at ~(32 * MTU) / RTT. At 1200B MTU and 50ms RTT: ~0.75 MB/s
+// 1024 allows for ~24 MB/s at 50ms RTT, sufficient for most WAN scenarios
+const KCP_SND_WND: u32 = 1024;
+const KCP_RCV_WND: u32 = 1024;
 
 fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay: bool) -> u32 {
     let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
@@ -248,7 +254,10 @@ impl KcpServer {
         );
         kcp.as_mut().set_mtu(mtu)?;
         kcp.as_mut().set_nodelay(true, 10, 2, true);
-        kcp.as_mut().set_stream(true); // Match client stream mode
+        kcp.as_mut().set_stream(true);
+        // Set larger window sizes for high-throughput WAN scenarios
+        // Default 32 caps throughput at ~(32 * MTU) / RTT
+        kcp.as_mut().set_wndsize(KCP_SND_WND, KCP_RCV_WND);
 
         // Create adapter and channels
         let (adapter, pump_chans, transport_chans) = KcpStreamAdapter::new_adapter();
@@ -643,13 +652,17 @@ impl KcpClient {
         kcp.as_mut().set_mtu(mtu)?;
         kcp.as_mut().set_nodelay(true, 10, 2, true);
         kcp.as_mut().set_stream(true);
+        // Set larger window sizes for high-throughput WAN scenarios
+        // Default 32 caps throughput at ~(32 * MTU) / RTT
+        kcp.as_mut().set_wndsize(KCP_SND_WND, KCP_RCV_WND);
 
         // Create adapter and channels
         let (adapter, pump_chans, transport_chans) = KcpStreamAdapter::new_adapter();
         let input_tx = transport_chans.input_tx.clone();
 
         // Trigger KCP update to ensure it's ready to send/receive
-        kcp.as_mut().update(system_time_ms());
+        let current = kcp.get_system_time();
+        kcp.as_mut().update(current);
         kcp.as_mut().flush();
 
         // Build the smux client with larger queues for concurrent streams

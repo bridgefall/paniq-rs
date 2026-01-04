@@ -55,13 +55,13 @@ impl KcpStreamAdapter {
     /// - Channels for the transport layer
     pub fn new_adapter() -> (Self, KcpPumpChannels, KcpTransportChannels) {
         // Channel for UDP -> KCP input
-        let (input_tx, input_rx) = mpsc::channel(128);
+        let (input_tx, input_rx) = mpsc::channel(4096);
         // Channel for smux -> KCP writes
-        let (write_tx, write_rx) = mpsc::channel(128);
+        let (write_tx, write_rx) = mpsc::channel(4096);
         // Channel for KCP -> smux reads
-        let (read_tx, read_rx) = mpsc::channel(128);
+        let (read_tx, read_rx) = mpsc::channel(4096);
         // Channel for KCP -> UDP output
-        let (output_tx, output_rx) = mpsc::channel(128);
+        let (output_tx, output_rx) = mpsc::channel(4096);
 
         let adapter = Self {
             read_rx,
@@ -191,7 +191,8 @@ pub async fn run_kcp_pump(
     output_tx: mpsc::Sender<Vec<u8>>,
 ) -> io::Result<()> {
     tracing::info!("KCP pump task starting");
-    let mut update_interval = tokio::time::interval(std::time::Duration::from_millis(20));
+    // Update interval must match KCP nodelay interval (10ms) for optimal throughput
+    let mut update_interval = tokio::time::interval(std::time::Duration::from_millis(10));
 
     // Drain any initial output
     drain_output(kcp.as_mut(), &output_tx).await?;
@@ -203,7 +204,9 @@ pub async fn run_kcp_pump(
                 if let Err(e) = kcp.input(&data) {
                     tracing::warn!("KCP input error: {}", e);
                 } else {
-                    kcp.update(system_time_ms());
+                    // Use KCP's monotonic timebase to avoid wall-clock jumps
+                    let current = kcp.get_system_time();
+                    kcp.update(current);
                     kcp.flush();
                 }
             }
@@ -213,14 +216,18 @@ pub async fn run_kcp_pump(
                 if let Err(e) = kcp.as_mut().send(&data) {
                     tracing::warn!("KCP send error: {}", e);
                 } else {
-                    kcp.update(system_time_ms());
+                    // Use KCP's monotonic timebase to avoid wall-clock jumps
+                    let current = kcp.get_system_time();
+                    kcp.update(current);
                     kcp.flush();
                 }
             }
 
             // Periodic KCP update
             _ = update_interval.tick() => {
-                kcp.update(system_time_ms());
+                // Use KCP's monotonic timebase to avoid wall-clock jumps
+                let current = kcp.get_system_time();
+                kcp.update(current);
             }
         }
 
