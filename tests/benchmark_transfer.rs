@@ -82,9 +82,7 @@ async fn socks5_download(
     socks_conn.set_nodelay(true)?;
 
     // SOCKS5 handshake with auth
-    socks_conn
-        .write_all(&[0x05, 0x02, 0x00, 0x02])
-        .await?;
+    socks_conn.write_all(&[0x05, 0x02, 0x00, 0x02]).await?;
     let mut resp = [0u8; 2];
     socks_conn.read_exact(&mut resp).await?;
     if resp != [0x05, 0x02] {
@@ -283,14 +281,16 @@ async fn run_benchmark(
     if !results.is_empty() {
         let total_bytes: usize = results.iter().map(|(_, b)| b).sum();
         let total_duration: Duration = results.iter().map(|(d, _)| *d).sum();
-        let avg_throughput =
-            (total_bytes as f64 / 1024.0 / 1024.0) / total_duration.as_secs_f64();
+        let avg_throughput = (total_bytes as f64 / 1024.0 / 1024.0) / total_duration.as_secs_f64();
 
         let min_duration = results.iter().map(|(d, _)| d).min().unwrap();
         let max_duration = results.iter().map(|(d, _)| d).max().unwrap();
 
         println!("\nResults:");
-        println!("  Total transferred: {:.2} MB", total_bytes as f64 / 1024.0 / 1024.0);
+        println!(
+            "  Total transferred: {:.2} MB",
+            total_bytes as f64 / 1024.0 / 1024.0
+        );
         println!("  Average throughput: {:.2} MB/s", avg_throughput);
         println!("  Min iteration time: {:.2}s", min_duration.as_secs_f64());
         println!("  Max iteration time: {:.2}s", max_duration.as_secs_f64());
@@ -329,7 +329,7 @@ async fn benchmark_transfer_medium() {
 }
 
 #[tokio::test]
-#[ignore] // Run this manually: cargo test --release --features kcp,socks5 benchmark_transfer_large -- --ignored
+// #[ignore] // Run this manually: cargo test --release --features kcp,socks5 benchmark_transfer_large -- --ignored
 async fn benchmark_transfer_large() {
     run_benchmark("Large File Transfer", TEST_SIZE_LARGE, 3)
         .await
