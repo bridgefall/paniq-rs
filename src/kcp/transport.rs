@@ -24,6 +24,11 @@ use kcp::Kcp;
 const TRANSPORT_LEN_FIELD: usize = 2;
 const TRANSPORT_COUNTER_FIELD: usize = 8;
 
+// Smux queue sizes for concurrent stream performance
+// Default 1024 is too small for high-throughput scenarios with multiple concurrent streams
+const SMUX_MAX_TX_QUEUE: usize = 8192;
+const SMUX_MAX_RX_QUEUE: usize = 8192;
+
 fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay: bool) -> u32 {
     let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
     let payload_budget = max_payload.min(max_packet_size);
@@ -249,8 +254,12 @@ impl KcpServer {
         let (adapter, pump_chans, transport_chans) = KcpStreamAdapter::new_adapter();
         let input_tx = transport_chans.input_tx.clone();
 
-        // Build the smux server
-        let (connector, acceptor, worker) = async_smux::MuxBuilder::server()
+        // Build the smux server with larger queues for concurrent streams
+        // Default 1024 tx/rx queues are too small for high-throughput scenarios
+        let mut builder = async_smux::MuxBuilder::server();
+        builder.with_max_tx_queue(std::num::NonZeroUsize::new(SMUX_MAX_TX_QUEUE).unwrap());
+        builder.with_max_rx_queue(std::num::NonZeroUsize::new(SMUX_MAX_RX_QUEUE).unwrap());
+        let (connector, acceptor, worker) = builder
             .with_connection(adapter)
             .build();
 
@@ -643,8 +652,12 @@ impl KcpClient {
         kcp.as_mut().update(system_time_ms());
         kcp.as_mut().flush();
 
-        // Build the smux client
-        let (connector, acceptor, worker) = async_smux::MuxBuilder::client()
+        // Build the smux client with larger queues for concurrent streams
+        // Default 1024 tx/rx queues are too small for high-throughput scenarios
+        let mut builder = async_smux::MuxBuilder::client();
+        builder.with_max_tx_queue(std::num::NonZeroUsize::new(SMUX_MAX_TX_QUEUE).unwrap());
+        builder.with_max_rx_queue(std::num::NonZeroUsize::new(SMUX_MAX_RX_QUEUE).unwrap());
+        let (connector, acceptor, worker) = builder
             .with_connection(adapter)
             .build();
 
