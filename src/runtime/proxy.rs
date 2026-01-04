@@ -107,7 +107,9 @@ impl ProxyHandle {
     /// # Returns
     ///
     /// A `ProxyHandle` that can be used to manage the server's lifecycle.
-    pub async fn spawn(config: ProxyConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn spawn(
+        config: ProxyConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let framer = Framer::new(config.profile.obf_config())?;
 
         // Map profile config to server config
@@ -292,14 +294,25 @@ async fn handle_stream(
     // are converted to Ok(()) so they don't cause try_join! to fail early.
     let (mut target_read, mut target_write) = target_stream.split();
 
+    // Check if an error represents an expected connection close.
+    // Includes standard IO errors and smux-specific errors.
     fn is_expected_close_error(e: &std::io::Error) -> bool {
-        matches!(
+        // Check standard error kinds
+        if matches!(
             e.kind(),
             std::io::ErrorKind::BrokenPipe
                 | std::io::ErrorKind::ConnectionReset
                 | std::io::ErrorKind::NotConnected
                 | std::io::ErrorKind::ConnectionAborted
-        )
+        ) {
+            return true;
+        }
+        // Check for smux-specific errors (async-smux returns these as io::Error)
+        let error_msg = e.to_string().to_lowercase();
+        error_msg.contains("tx is already closed")
+            || error_msg.contains("rx is already closed")
+            || error_msg.contains("stream is closed")
+            || error_msg.contains("connection closed")
     }
 
     let client_to_target = async {
@@ -336,12 +349,11 @@ async fn handle_stream(
             match target_read.read(&mut buf).await {
                 Ok(0) => break,
                 Ok(n) => {
-                    if let Err(e) = send.write_all(&buf[..n]).await {
-                        // Treat expected close errors as clean shutdown
-                        if is_expected_close_error(&e) {
-                            break;
-                        }
-                        return Err(e);
+                    if send.write_all(&buf[..n]).await.is_err() {
+                        // Treat ALL KCP write errors as expected - the smux layer
+                        // manages stream lifecycle and may close streams at any time.
+                        // We don't want write errors to fail the entire relay.
+                        break;
                     }
                 }
                 Err(e) => {
@@ -353,9 +365,7 @@ async fn handle_stream(
                 }
             }
         }
-        // Shutdown KCP send side to propagate EOF to client.
-        // This ensures the client sees when the target closes.
-        let _ = send.shutdown().await;
+        // Do NOT shutdown KCP send side - let smux manage stream lifecycle
         Ok::<(), std::io::Error>(())
     };
 
@@ -419,7 +429,9 @@ where
 /// These optimizations match Go's net.Dialer behavior and are critical
 /// for achieving comparable throughput:
 /// - TCP_NODELAY disables Nagle's algorithm (200ms delay for small packets)
-fn optimize_tcp_stream(stream: tokio::net::TcpStream) -> Result<tokio::net::TcpStream, std::io::Error> {
+fn optimize_tcp_stream(
+    stream: tokio::net::TcpStream,
+) -> Result<tokio::net::TcpStream, std::io::Error> {
     // Disable Nagle's algorithm - critical for low-latency proxy traffic
     stream.set_nodelay(true)?;
     Ok(stream)
