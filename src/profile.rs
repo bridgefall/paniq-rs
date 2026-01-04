@@ -273,6 +273,58 @@ impl Profile {
     pub fn obf_config(&self) -> ObfConfig {
         self.obfuscation.to_obf_config()
     }
+
+    /// Create a test profile with minimal configuration for integration testing.
+    ///
+    /// This uses the same profile structure as production but with simplified
+    /// values suitable for fast, deterministic tests.
+    pub fn test_profile() -> Self {
+        use std::time::Duration;
+
+        Self {
+            name: "test".to_string(),
+            proxy_addr: "127.0.0.1:19000".to_string(),
+            handshake_timeout: Some(Duration::from_secs(5)),
+            handshake_attempts: 3,
+            preamble_delay_ms: Some(5),
+            preamble_jitter_ms: None,
+            kcp: None,
+            transport_padding: None,
+            obfuscation: ObfuscationConfig {
+                jc: 0,
+                jmin: 0,
+                jmax: 0,
+                s1: 0,
+                s2: 0,
+                s3: 0,
+                s4: 0,
+                h1: "1".into(),
+                h2: "2".into(),
+                h3: "3".into(),
+                h4: "4".into(),
+                i1: "<d>".into(),
+                i2: String::new(),
+                i3: String::new(),
+                i4: String::new(),
+                i5: String::new(),
+                server_public_key: String::new(),
+                server_private_key: String::new(),
+                signature_validate: true,
+                require_timestamp: None,
+                encrypted_timestamp: false,
+                require_encrypted_timestamp: true,
+                legacy_mode_enabled: false,
+                skew_soft_seconds: 15,
+                skew_hard_seconds: 30,
+                replay_window_seconds: 0,
+                replay_cache_size: 0,
+                transport_replay: false,
+                transport_replay_limit: 0,
+                rate_limit_pps: 0,
+                rate_limit_burst: 0,
+            },
+        }
+    }
 }
 
 // Serde duration modules - handles string formats like "5s", "20s", "2m"
