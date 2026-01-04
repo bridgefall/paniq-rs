@@ -28,3 +28,5 @@ fuzz/target/
 
 # E2E test logs
 e2e-logs/
+*.remote.json
+*.local.json
