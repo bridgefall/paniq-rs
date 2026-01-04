@@ -42,7 +42,10 @@ impl SocksConfig {
 
 /// Handle to a running SOCKS5 server.
 ///
-/// When dropped, the server will be gracefully shut down.
+/// When dropped, the server will be gracefully shut down via cancellation token.
+/// Note: Drop cannot wait for async shutdown to complete, so the server task
+/// is cancelled but may not finish before the handle is dropped. For clean
+/// shutdown in tests, call `wait()` explicitly before dropping.
 pub struct SocksHandle {
     /// The address the server is listening on.
     pub addr: SocketAddr,

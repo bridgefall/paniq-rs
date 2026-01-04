@@ -303,6 +303,8 @@ impl Profile {
                 h3: "3".into(),
                 h4: "4".into(),
                 i1: "<d>".into(),
+                // Empty strings match production serialization behavior;
+                // jc/jmin/jmax = 0 means no obfuscation, so these fields are unused
                 i2: String::new(),
                 i3: String::new(),
                 i4: String::new(),

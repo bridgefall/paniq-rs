@@ -33,7 +33,10 @@ impl ProxyConfig {
 
 /// Handle to a running proxy server.
 ///
-/// When dropped, the server will be gracefully shut down.
+/// When dropped, the server will be gracefully shut down via cancellation token.
+/// Note: Drop cannot wait for async shutdown to complete, so the server task
+/// is cancelled but may not finish before the handle is dropped. For clean
+/// shutdown in tests, call `wait()` explicitly before dropping.
 pub struct ProxyHandle {
     /// The address the server is listening on.
     pub addr: SocketAddr,
@@ -294,9 +297,10 @@ async fn connect_any<I>(
 where
     I: IntoIterator<Item = SocketAddr>,
 {
-    let mut found = false;
-    for addr in addrs {
-        found = true;
+    // Collect addresses so we can include them in error messages
+    let addrs: Vec<_> = addrs.into_iter().collect();
+
+    for addr in &addrs {
         match tokio::net::TcpStream::connect(addr).await {
             Ok(stream) => return Ok(stream),
             Err(_) => continue,
@@ -305,10 +309,10 @@ where
 
     Err(Box::new(std::io::Error::new(
         std::io::ErrorKind::NotFound,
-        if found {
-            "all connection attempts failed"
+        if addrs.is_empty() {
+            "no addresses found".to_string()
         } else {
-            "no addresses found"
+            format!("all connection attempts failed for addresses: {:?}", addrs)
         },
     )))
 }

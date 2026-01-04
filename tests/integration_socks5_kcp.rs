@@ -20,6 +20,15 @@ use support::StackHarness;
 
 const MAX_END_TO_END_LATENCY: Duration = Duration::from_secs(1);
 
+// Time for servers to fully start and accept connections
+const SERVER_STARTUP_DELAY_MS: u64 = 100;
+
+// Time for smux streams to complete graceful shutdown (prevents "Connection reset by peer" errors)
+const STREAM_SHUTDOWN_DELAY_MS: u64 = 10;
+
+// Longer delay for soak test cleanup (more active streams to shut down)
+const SOAK_CLEANUP_DELAY_MS: u64 = 50;
+
 /// Simple HTTP server that returns "ok"
 async fn start_http_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -62,7 +71,7 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
         .expect("Failed to spawn test harness");
 
     // Give servers time to start
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(SERVER_STARTUP_DELAY_MS)).await;
 
     // Connect as SOCKS5 client
     let mut socks_conn = tokio::net::TcpStream::connect(harness.socks_addr())
@@ -156,8 +165,10 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
         elapsed
     );
 
-    // Cleanup - harness Drop will handle server shutdown
+    // Cleanup - give connections time to close gracefully
     drop(socks_conn);
+    // Delay to allow smux streams to finish cleanup before server shutdown
+    tokio::time::sleep(Duration::from_millis(STREAM_SHUTDOWN_DELAY_MS)).await;
     drop(harness);
     http_handle.abort();
 
@@ -193,7 +204,7 @@ async fn soak_socks5_over_kcp_30s() {
         .expect("Failed to spawn test harness");
 
     // Give servers time to start
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(SERVER_STARTUP_DELAY_MS)).await;
 
     // Now run the actual soak test with REUSED connections
     let start = Instant::now();
@@ -321,7 +332,9 @@ async fn soak_socks5_over_kcp_30s() {
         }
     }
 
-    // Cleanup - harness Drop will handle server shutdown
+    // Cleanup - give connections time to close gracefully
+    // Delay to allow smux streams to finish cleanup before server shutdown
+    tokio::time::sleep(Duration::from_millis(SOAK_CLEANUP_DELAY_MS)).await;
     drop(harness);
     http_handle.abort();
 
