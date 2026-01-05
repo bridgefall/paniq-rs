@@ -27,7 +27,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let obf_config = profile.obf_config();
     let framer = Framer::new(obf_config.clone()).expect("framer");
 
-    let server_addr = profile.proxy_addr.parse()?;
+    let server_addr = args
+        .proxy_addr_override
+        .as_deref()
+        .unwrap_or(&profile.proxy_addr)
+        .parse()?;
 
     // Map profile config to client config
     let config = ClientConfigWrapper {
@@ -86,6 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 struct Args {
     listen_addr: String,
     profile: PathBuf,
+    proxy_addr_override: Option<String>,
     auth: Option<(String, String)>,
 }
 
@@ -93,6 +98,7 @@ fn parse_args() -> Result<Args, pico_args::Error> {
     let mut pargs = pico_args::Arguments::from_env();
     let listen_addr = pargs.value_from_str(["-l", "--listen"])?;
     let profile: PathBuf = pargs.value_from_str(["-p", "--profile"])?;
+    let proxy_addr_override = pargs.opt_value_from_str("--proxy-addr")?;
     let auth = if let (Ok(user), Ok(pass)) = (
         pargs.value_from_str(["-u", "--user"]),
         pargs.value_from_str(["-a", "--auth"]),
@@ -104,6 +110,7 @@ fn parse_args() -> Result<Args, pico_args::Error> {
     Ok(Args {
         listen_addr,
         profile,
+        proxy_addr_override,
         auth,
     })
 }
