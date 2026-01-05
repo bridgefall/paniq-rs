@@ -93,6 +93,7 @@ impl SocksHandle {
             handshake_attempts: 3,
             preamble_delay_ms: 5,
         };
+        let relay_buffer_size = client_config.max_payload;
 
         let (_ep, conn) = connect(
             std::net::UdpSocket::bind("0.0.0.0:0")?,
@@ -115,7 +116,11 @@ impl SocksHandle {
             })
             .unwrap_or_default();
 
-        let server = Arc::new(Socks5Server::new(connector, auth));
+        let server = Arc::new(Socks5Server::new_with_relay_buffer(
+            connector,
+            auth,
+            relay_buffer_size,
+        ));
         let listener = TcpListener::bind(&config.listen_addr).await?;
         let addr = listener.local_addr()?;
 

@@ -97,13 +97,23 @@ impl RelayConnector for TcpConnector {
 pub struct Socks5Server<C> {
     connector: Arc<C>,
     auth: AuthConfig,
+    relay_buffer_size: usize,
 }
 
 impl<C: RelayConnector> Socks5Server<C> {
     pub fn new(connector: C, auth: AuthConfig) -> Self {
+        Self::new_with_relay_buffer(connector, auth, default_relay_buffer_size())
+    }
+
+    pub fn new_with_relay_buffer(
+        connector: C,
+        auth: AuthConfig,
+        relay_buffer_size: usize,
+    ) -> Self {
         Self {
             connector: Arc::new(connector),
             auth,
+            relay_buffer_size: relay_buffer_size.max(1),
         }
     }
 
@@ -146,7 +156,7 @@ impl<C: RelayConnector> Socks5Server<C> {
         send_success_reply(&mut socket, &target).await?;
         tracing::info!("Success reply sent, starting relay");
 
-        relay_bidirectional(socket, remote).await
+        relay_bidirectional(socket, remote, self.relay_buffer_size).await
     }
 }
 
@@ -195,6 +205,26 @@ fn map_target(addr: Option<fast_target::TargetAddr>) -> Result<TargetAddr, Socks
     }
 }
 
+fn default_relay_buffer_size() -> usize {
+    crate::profile::KcpConfig::default().max_payload
+}
+
+fn is_expected_close_error(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::ConnectionAborted
+    ) || {
+        let error_msg = e.to_string().to_lowercase();
+        error_msg.contains("tx is already closed")
+            || error_msg.contains("rx is already closed")
+            || error_msg.contains("stream is closed")
+            || error_msg.contains("connection closed")
+    }
+}
+
 async fn send_success_reply<S>(stream: &mut S, target: &TargetAddr) -> Result<(), SocksError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -231,7 +261,11 @@ where
     Ok(())
 }
 
-async fn relay_bidirectional<C, R>(client: C, remote: R) -> Result<(), SocksError>
+async fn relay_bidirectional<C, R>(
+    client: C,
+    remote: R,
+    relay_buffer_size: usize,
+) -> Result<(), SocksError>
 where
     C: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -242,7 +276,7 @@ where
 
     let client_to_remote = async {
         tracing::debug!("client_to_remote: Starting");
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; relay_buffer_size];
         let mut total = 0u64;
         loop {
             match client_read.read(&mut buf).await {
@@ -263,6 +297,9 @@ where
                     total += n as u64;
                 }
                 Err(e) => {
+                    if is_expected_close_error(&e) {
+                        break;
+                    }
                     tracing::error!(error = %e, "client_to_remote: Read error");
                     return Err(e);
                 }
@@ -281,7 +318,7 @@ where
 
     let remote_to_client = async {
         tracing::debug!("remote_to_client: Starting");
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; relay_buffer_size];
         let mut total = 0u64;
         loop {
             match remote_read.read(&mut buf).await {
@@ -302,6 +339,9 @@ where
                     total += n as u64;
                 }
                 Err(e) => {
+                    if is_expected_close_error(&e) {
+                        break;
+                    }
                     tracing::error!(error = %e, "remote_to_client: Read error");
                     return Err(e);
                 }

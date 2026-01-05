@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Map profile config to client config
     let kcp_profile = profile.kcp.clone().unwrap_or_default();
+    let relay_buffer_size = kcp_profile.max_payload;
     let config = ClientConfigWrapper {
         max_packet_size: kcp_profile.max_packet_size,
         max_payload: kcp_profile.max_payload,
@@ -70,7 +71,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .unwrap_or_default();
 
-    let server = Arc::new(Socks5Server::new(connector, auth));
+    let server = Arc::new(Socks5Server::new_with_relay_buffer(
+        connector,
+        auth,
+        relay_buffer_size,
+    ));
     let listener = TcpListener::bind(&args.listen_addr).await?;
 
     tracing::info!(listen_addr = %args.listen_addr, "SOCKS5 daemon listening");
