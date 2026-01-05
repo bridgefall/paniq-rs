@@ -324,7 +324,8 @@ impl KcpServer {
         kcp.as_mut().set_wndsize(KCP_SND_WND, KCP_RCV_WND);
 
         // Create adapter and channels
-        let (adapter, pump_chans, transport_chans) = KcpStreamAdapter::new_adapter();
+        let (adapter, pump_chans, transport_chans) =
+            KcpStreamAdapter::new_adapter(self.config.max_payload);
         let input_tx = transport_chans.input_tx.clone();
 
         // Build the smux server with larger queues for concurrent streams
@@ -723,7 +724,8 @@ impl KcpClient {
         kcp.as_mut().set_wndsize(KCP_SND_WND, KCP_RCV_WND);
 
         // Create adapter and channels
-        let (adapter, pump_chans, transport_chans) = KcpStreamAdapter::new_adapter();
+        let (adapter, pump_chans, transport_chans) =
+            KcpStreamAdapter::new_adapter(self.config.max_payload);
         let input_tx = transport_chans.input_tx.clone();
 
         // Trigger KCP update to ensure it's ready to send/receive

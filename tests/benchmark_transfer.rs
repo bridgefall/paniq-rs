@@ -255,7 +255,12 @@ async fn run_benchmark(
     // Enable logging (ok if already initialized)
     let telemetry_enabled = std::env::var("PANIQ_KCP_TELEMETRY")
         .ok()
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
     if telemetry_enabled {
         let filter = tracing_subscriber::EnvFilter::builder()
@@ -349,6 +354,7 @@ async fn run_benchmark(
 }
 
 #[tokio::test]
+#[ignore] // Run this manually: cargo test --release --features kcp,socks5 benchmark_transfer_small -- --ignored
 async fn benchmark_transfer_small() {
     run_benchmark("Small File Transfer", TEST_SIZE_SMALL, 3)
         .await
@@ -363,7 +369,7 @@ async fn benchmark_transfer_medium() {
 }
 
 #[tokio::test]
-// #[ignore] // Run this manually: cargo test --release --features kcp,socks5 benchmark_transfer_large -- --ignored
+#[ignore] // Run this manually: cargo test --release --features kcp,socks5 benchmark_transfer_large -- --ignored
 async fn benchmark_transfer_large() {
     run_benchmark("Large File Transfer", TEST_SIZE_LARGE, 3)
         .await

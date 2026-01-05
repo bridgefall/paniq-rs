@@ -536,7 +536,8 @@ impl KcpServer {
         // Create channels for KCP engine input (UDP packets)
         let (input_tx, input_rx) = mpsc::channel(channel_capacity);
         // Create adapter and channels for smux
-        let (adapter, read_tx, write_rx) = KcpStreamAdapter::new_adapter_from_capacity(channel_capacity);
+        let (adapter, read_tx, write_rx) =
+            KcpStreamAdapter::new_adapter_from_capacity(channel_capacity, self.config.max_payload);
 
         // Build the smux server
         let mut builder = async_smux::MuxBuilder::server();
@@ -1022,7 +1023,8 @@ impl KcpClient {
         // Create channels for KCP engine input (UDP packets)
         let (input_tx, input_rx) = mpsc::channel(channel_capacity);
         // Create adapter and channels for smux
-        let (adapter, read_tx, write_rx) = KcpStreamAdapter::new_adapter_from_capacity(channel_capacity);
+        let (adapter, read_tx, write_rx) =
+            KcpStreamAdapter::new_adapter_from_capacity(channel_capacity, self.config.max_payload);
 
         // Build the smux client
         let mut builder = async_smux::MuxBuilder::client();
