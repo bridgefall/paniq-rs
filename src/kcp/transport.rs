@@ -31,9 +31,9 @@ const SMUX_MAX_RX_QUEUE: usize = 8192;
 
 // KCP window sizes for high-throughput WAN scenarios
 // Default 32 caps throughput at ~(32 * MTU) / RTT. At 1200B MTU and 50ms RTT: ~0.75 MB/s
-// 512 performed best in local benchmarks with congestion control enabled.
-const KCP_SND_WND: u32 = 512;
-const KCP_RCV_WND: u32 = 512;
+// 1024 is a safer WAN baseline; larger BDPs may need more in-flight data.
+const KCP_SND_WND: u32 = 1024;
+const KCP_RCV_WND: u32 = 1024;
 
 fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay: bool) -> u32 {
     let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
