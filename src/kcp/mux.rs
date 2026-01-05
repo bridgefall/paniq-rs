@@ -15,6 +15,8 @@ use tokio_util::sync::PollSender;
 
 use crate::telemetry;
 
+const DEFAULT_CHANNEL_CAPACITY: usize = 4096;
+
 #[derive(Clone, Copy, Default)]
 struct TelemetryCounters {
     app_send_bytes: u64,
@@ -149,13 +151,13 @@ impl KcpStreamAdapter {
     /// - Channels for the transport layer
     pub fn new_adapter() -> (Self, KcpPumpChannels, KcpTransportChannels) {
         // Channel for UDP -> KCP input
-        let (input_tx, input_rx) = mpsc::channel(4096);
+        let (input_tx, input_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
         // Channel for smux -> KCP writes
-        let (write_tx, write_rx) = mpsc::channel(4096);
+        let (write_tx, write_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
         // Channel for KCP -> smux reads
-        let (read_tx, read_rx) = mpsc::channel(4096);
+        let (read_tx, read_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
         // Channel for KCP -> UDP output
-        let (output_tx, output_rx) = mpsc::channel(4096);
+        let (output_tx, output_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
 
         let adapter = Self {
             read_rx,
@@ -186,6 +188,41 @@ impl KcpStreamAdapter {
     /// Get the read_rx channel directly (for advanced use).
     pub fn into_read_channel(self) -> mpsc::Receiver<Bytes> {
         self.read_rx
+    }
+
+    /// Create a new adapter with channels for bidirectional communication.
+    ///
+    /// This is useful when you want to use externally created channels
+    /// (e.g., with kcp-tokio engine).
+    ///
+    /// Returns (adapter, read_tx, write_rx) where:
+    ///   - adapter: The KcpStreamAdapter for smux
+    ///   - read_tx: Sender for data to be read by the adapter (KCP → smux)
+    ///   - write_rx: Receiver for data written by the adapter (smux → KCP)
+    ///
+    /// Data flow:
+    /// - Data sent to `read_tx` will be read from the adapter (via internal channel)
+    /// - Data written to the adapter will be available on `write_rx`
+    pub fn new_adapter_from() -> (Self, mpsc::Sender<Bytes>, mpsc::Receiver<Bytes>) {
+        Self::new_adapter_from_capacity(DEFAULT_CHANNEL_CAPACITY)
+    }
+
+    /// Create a new adapter with a custom channel capacity.
+    pub fn new_adapter_from_capacity(
+        capacity: usize,
+    ) -> (Self, mpsc::Sender<Bytes>, mpsc::Receiver<Bytes>) {
+        // Create channels for the adapter
+        let (read_tx, read_rx) = mpsc::channel(capacity);
+        let (write_tx, write_rx) = mpsc::channel(capacity);
+
+        let adapter = Self {
+            read_rx,
+            read_buf: None,
+            write_tx: PollSender::new(write_tx),
+        };
+
+        // Return adapter, read_tx (for KCP to send to), and write_rx (for KCP to receive from)
+        (adapter, read_tx, write_rx)
     }
 }
 

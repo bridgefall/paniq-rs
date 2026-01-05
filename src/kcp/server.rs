@@ -9,8 +9,8 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::envelope::padding::PaddingPolicy;
+use crate::kcp::kcp_tokio::{ServerConfig, KcpServer};
 use crate::kcp::mux::KcpStreamAdapter;
-use crate::kcp::transport::{KcpServer, ServerConfig};
 use crate::obf::Framer;
 
 #[derive(Debug, thiserror::Error)]

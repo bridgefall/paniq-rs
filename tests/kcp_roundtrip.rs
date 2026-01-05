@@ -1,7 +1,7 @@
 #![cfg(feature = "kcp")]
 
 use paniq::kcp::server::listen;
-use paniq::kcp::transport::KcpClient;
+use paniq::kcp::KcpClient;
 use paniq::obf::{Config, Framer, SharedRng};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -46,7 +46,7 @@ async fn kcp_round_trip_over_obfuscating_socket() {
         preamble_delay_ms: 5,
     };
 
-    let client_config = paniq::kcp::transport::ClientConfig {
+    let client_config = paniq::kcp::ClientConfig {
         max_packet_size: 1350,
         max_payload: 1200,
         transport_replay: false,

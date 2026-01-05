@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tracing::info;
 
 use crate::envelope::padding::PaddingPolicy;
+use crate::kcp::kcp_tokio::{ClientConfig, KcpClient};
 use crate::kcp::mux::KcpStreamAdapter;
-use crate::kcp::transport::{ClientConfig, KcpClient};
 use crate::obf::Framer;
 
 #[derive(Debug, thiserror::Error)]

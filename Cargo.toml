@@ -23,6 +23,7 @@ once_cell = "1.19"
 fast-socks5 = "0.10.0"
 pico-args = "0.5"
 kcp-rs = { version = "0.2.4", optional = true }
+kcp-tokio = { version = "0.3", optional = true }
 async_smux = { version = "0.3.4", optional = true }
 bytes = { version = "1.11.0" }
 futures = { version = "0.3.31" }
@@ -30,7 +31,7 @@ tokio-util = { version = "0.7", optional = true }
 
 [features]
 default = []
-kcp = ["tokio", "dep:tracing-subscriber", "kcp-rs", "async_smux", "tokio-util"]
+kcp = ["tokio", "dep:tracing-subscriber", "kcp-rs", "kcp-tokio", "async_smux", "tokio-util"]
 socks5 = ["tokio", "dep:tracing-subscriber", "async-trait"]
 
 [dev-dependencies]
@@ -54,3 +55,6 @@ required-features = ["kcp"]
 name = "gen_test_cert"
 path = "bin/gen_test_cert.rs"
 required-features = []
+
+[patch.crates-io]
+kcp-tokio = { git = "https://github.com/bridgefall/rust-kcp", branch = "fix-ack-window" }

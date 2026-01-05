@@ -159,8 +159,22 @@ async fn socks5_download(
     // Read HTTP headers first
     let mut header_buf = vec![0u8; 8192];
     let mut header_pos = 0;
+    let headers_deadline = Instant::now() + CONNECT_TIMEOUT;
     let headers_end = loop {
-        let n = socks_conn.read(&mut header_buf[header_pos..]).await?;
+        let remaining = headers_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("Header timeout".into());
+        }
+        let n = timeout(remaining, socks_conn.read(&mut header_buf[header_pos..]))
+            .await
+            .map_err(|_| "Header timeout")??;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "Unexpected EOF while reading headers",
+            )
+            .into());
+        }
         header_pos += n;
         let header_text = String::from_utf8_lossy(&header_buf[..header_pos]);
         if let Some(idx) = header_text.find("\r\n\r\n") {
@@ -179,14 +193,10 @@ async fn socks5_download(
 
     // Read response body
     let mb = (expected_bytes + (BYTES_PER_MB - 1)) / BYTES_PER_MB;
-    let transfer_timeout = TRANSFER_TIMEOUT_PER_MB * mb as u32;
-    let deadline = Instant::now() + transfer_timeout;
+    let soft_deadline = Instant::now() + TRANSFER_TIMEOUT_PER_MB * mb as u32;
+    let mut warned = false;
     while data.len() < expected_bytes {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Err("Transfer timeout".into());
-        }
-        let n = timeout(remaining, socks_conn.read(&mut header_buf))
+        let n = timeout(CONNECT_TIMEOUT, socks_conn.read(&mut header_buf))
             .await
             .map_err(|_| "Transfer timeout")??;
 
@@ -198,6 +208,14 @@ async fn socks5_download(
             .into());
         }
         data.extend_from_slice(&header_buf[..n]);
+        let now = Instant::now();
+        if !warned && now > soft_deadline {
+            eprintln!(
+                "WARNING: Transfer exceeded expected timeout of {:?}",
+                TRANSFER_TIMEOUT_PER_MB * mb as u32
+            );
+            warned = true;
+        }
     }
 
     Ok(data.len())
