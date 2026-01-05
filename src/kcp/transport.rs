@@ -17,6 +17,7 @@ use crate::envelope::padding::PaddingPolicy;
 use crate::envelope::transport::{build_transport_payload, decode_transport_payload};
 use crate::kcp::mux::{run_kcp_pump, KcpStreamAdapter};
 use crate::obf::{Framer, MessageType, SharedRng};
+use crate::envelope::EnvelopeError;
 
 // Import kcp types - kcp-rs library is named "kcp" internally
 use kcp::Kcp;
@@ -39,6 +40,27 @@ fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay:
     let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
     let payload_budget = max_payload.min(max_packet_size);
     payload_budget.saturating_sub(overhead).max(1) as u32
+}
+
+fn build_transport_payload_fast(
+    payload: &[u8],
+    counter: Option<u64>,
+    max_payload: usize,
+) -> Result<Vec<u8>, EnvelopeError> {
+    if payload.len() > u16::MAX as usize {
+        return Err(EnvelopeError::PayloadTooLarge);
+    }
+    let overhead = TRANSPORT_LEN_FIELD + if counter.is_some() { TRANSPORT_COUNTER_FIELD } else { 0 };
+    if payload.len() + overhead > max_payload {
+        return Err(EnvelopeError::PayloadTooLarge);
+    }
+    let mut out = Vec::with_capacity(overhead + payload.len());
+    if let Some(counter) = counter {
+        out.extend_from_slice(&counter.to_be_bytes());
+    }
+    out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    out.extend_from_slice(payload);
+    Ok(out)
 }
 
 /// KCP session state.
@@ -424,7 +446,7 @@ async fn udp_send_loop(
     let mut counter = 0u64;
     while let Some(kcp_bytes) = output_rx.recv().await {
         // Build transport payload with counter and padding
-        let payload = {
+        let payload = if config.padding_policy.enabled {
             let mut rng_guard = framer.rng().0.lock().unwrap();
             build_transport_payload(
                 &kcp_bytes,
@@ -436,6 +458,16 @@ async fn udp_send_loop(
                 &config.padding_policy,
                 config.max_payload,
                 &mut *rng_guard,
+            )
+        } else {
+            build_transport_payload_fast(
+                &kcp_bytes,
+                if config.transport_replay {
+                    Some(counter)
+                } else {
+                    None
+                },
+                config.max_payload,
             )
         };
         let payload = match payload {
@@ -485,7 +517,7 @@ async fn udp_send_loop_client(
     let mut counter = 0u64;
     while let Some(kcp_bytes) = output_rx.recv().await {
         // Build transport payload with counter and padding
-        let payload = {
+        let payload = if config.padding_policy.enabled {
             let mut rng_guard = framer.rng().0.lock().unwrap();
             build_transport_payload(
                 &kcp_bytes,
@@ -497,6 +529,16 @@ async fn udp_send_loop_client(
                 &config.padding_policy,
                 config.max_payload,
                 &mut *rng_guard,
+            )
+        } else {
+            build_transport_payload_fast(
+                &kcp_bytes,
+                if config.transport_replay {
+                    Some(counter)
+                } else {
+                    None
+                },
+                config.max_payload,
             )
         };
         let payload = match payload {
