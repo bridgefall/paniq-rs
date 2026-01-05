@@ -31,9 +31,9 @@ const SMUX_MAX_RX_QUEUE: usize = 8192;
 
 // KCP window sizes for high-throughput WAN scenarios
 // Default 32 caps throughput at ~(32 * MTU) / RTT. At 1200B MTU and 50ms RTT: ~0.75 MB/s
-// 2048 allows for ~48 MB/s at 50ms RTT, sufficient for high-throughput scenarios
-const KCP_SND_WND: u32 = 2048;
-const KCP_RCV_WND: u32 = 2048;
+// 512 performed best in local benchmarks with congestion control enabled.
+const KCP_SND_WND: u32 = 512;
+const KCP_RCV_WND: u32 = 512;
 
 fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay: bool) -> u32 {
     let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
@@ -253,8 +253,8 @@ impl KcpServer {
             self.config.transport_replay,
         );
         kcp.as_mut().set_mtu(mtu)?;
-        // Disable congestion control (nc=true) for maximum throughput
-        kcp.as_mut().set_nodelay(true, 10, 2, true);
+        // Enable congestion control (nc=false) for better WAN performance under load
+        kcp.as_mut().set_nodelay(true, 10, 2, false);
         kcp.as_mut().set_stream(true);
         // Set larger window sizes for high-throughput WAN scenarios
         // Default 32 caps throughput at ~(32 * MTU) / RTT
@@ -599,7 +599,6 @@ impl KcpClient {
         framer: Framer,
         config: ClientConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        // Bind to any available port using tokio socket
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         socket.connect(server_addr).await?;
 
@@ -651,8 +650,8 @@ impl KcpClient {
             self.config.transport_replay,
         );
         kcp.as_mut().set_mtu(mtu)?;
-        // Disable congestion control (nc=true) for maximum throughput
-        kcp.as_mut().set_nodelay(true, 10, 2, true);
+        // Enable congestion control (nc=false) for better WAN performance under load
+        kcp.as_mut().set_nodelay(true, 10, 2, false);
         kcp.as_mut().set_stream(true);
         // Set larger window sizes for high-throughput WAN scenarios
         // Default 32 caps throughput at ~(32 * MTU) / RTT
