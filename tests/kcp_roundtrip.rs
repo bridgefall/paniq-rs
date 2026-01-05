@@ -39,6 +39,11 @@ async fn kcp_round_trip_over_obfuscating_socket() {
     let server_config = paniq::kcp::server::ServerConfigWrapper {
         max_packet_size: 1350,
         max_payload: 1200,
+        send_window: None,
+        recv_window: None,
+        target_bps: None,
+        rtt_ms: None,
+        max_snd_queue: None,
         transport_replay: false,
         idle_timeout_secs: 120,
         handshake_timeout_secs: 5,
@@ -49,6 +54,11 @@ async fn kcp_round_trip_over_obfuscating_socket() {
     let client_config = paniq::kcp::ClientConfig {
         max_packet_size: 1350,
         max_payload: 1200,
+        send_window: None,
+        recv_window: None,
+        target_bps: None,
+        rtt_ms: None,
+        max_snd_queue: None,
         transport_replay: false,
         padding_policy: paniq::envelope::padding::PaddingPolicy {
             enabled: false,

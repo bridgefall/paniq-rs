@@ -59,6 +59,26 @@ pub struct KcpConfig {
 
     #[serde(default = "default_max_streams")]
     pub max_streams: usize,
+
+    /// Optional explicit KCP send window size (in segments)
+    #[serde(default)]
+    pub send_window: Option<u32>,
+
+    /// Optional explicit KCP receive window size (in segments)
+    #[serde(default)]
+    pub recv_window: Option<u32>,
+
+    /// Optional target throughput in bits per second for BDP-based window sizing
+    #[serde(default)]
+    pub target_bps: Option<u64>,
+
+    /// Optional RTT estimate in milliseconds for BDP-based window sizing
+    #[serde(default)]
+    pub rtt_ms: Option<u64>,
+
+    /// Optional maximum KCP send queue size (in segments)
+    #[serde(default)]
+    pub max_snd_queue: Option<u32>,
 }
 
 fn default_max_packet_size() -> usize {

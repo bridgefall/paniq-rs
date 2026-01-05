@@ -83,6 +83,11 @@ impl SocksHandle {
                 .as_ref()
                 .map(|k| k.max_payload)
                 .unwrap_or(1200),
+            send_window: config.profile.kcp.as_ref().and_then(|k| k.send_window),
+            recv_window: config.profile.kcp.as_ref().and_then(|k| k.recv_window),
+            target_bps: config.profile.kcp.as_ref().and_then(|k| k.target_bps),
+            rtt_ms: config.profile.kcp.as_ref().and_then(|k| k.rtt_ms),
+            max_snd_queue: config.profile.kcp.as_ref().and_then(|k| k.max_snd_queue),
             transport_replay: config.profile.obfuscation.transport_replay,
             handshake_timeout_secs: 5,
             handshake_attempts: 3,

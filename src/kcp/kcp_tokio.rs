@@ -24,7 +24,7 @@ use crate::envelope::transport::{build_transport_payload, decode_transport_paylo
 use crate::kcp::mux::{KcpStreamAdapter};
 use crate::obf::{Framer, MessageType, SharedRng};
 use crate::telemetry;
-use kcp_tokio::common::KcpStats;
+use kcp_tokio::common::{KcpStats, constants as kcp_constants};
 use kcp_tokio::config::NodeDelayConfig;
 
 // Re-export kcp-tokio types for convenience
@@ -43,6 +43,9 @@ const KCP_RCV_WND: u32 = 1024;
 const KCP_NODELAY_INTERVAL_MS: u32 = 10;
 const KCP_FAST_RESEND: u32 = 2;
 const KCP_NO_CONGESTION: bool = true;
+const BITS_PER_BYTE: u64 = 8;
+const MILLIS_PER_SEC: u64 = 1000;
+const MIN_KCP_WINDOW: u32 = 1;
 
 /// KCP telemetry counters.
 #[derive(Default, Clone, Copy)]
@@ -165,6 +168,64 @@ fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay:
     payload_budget.saturating_sub(overhead).max(1) as u32
 }
 
+fn compute_bdp_window(mtu: u32, target_bps: u64, rtt_ms: u64) -> Option<u32> {
+    if target_bps == 0 || rtt_ms == 0 {
+        return None;
+    }
+
+    let mss = mtu.saturating_sub(kcp_constants::IKCP_OVERHEAD);
+    if mss == 0 {
+        return None;
+    }
+
+    let bytes_per_sec = target_bps / BITS_PER_BYTE;
+    if bytes_per_sec == 0 {
+        return None;
+    }
+
+    let inflight_bytes = (bytes_per_sec as u128)
+        .saturating_mul(rtt_ms as u128)
+        .saturating_add((MILLIS_PER_SEC - 1) as u128)
+        / MILLIS_PER_SEC as u128;
+    let window = (inflight_bytes + mss as u128 - 1) / mss as u128;
+    let window = window.clamp(MIN_KCP_WINDOW as u128, u32::MAX as u128) as u32;
+    Some(window)
+}
+
+fn resolve_kcp_windows(
+    max_packet_size: usize,
+    max_payload: usize,
+    send_window: Option<u32>,
+    recv_window: Option<u32>,
+    target_bps: Option<u64>,
+    rtt_ms: Option<u64>,
+    max_snd_queue: Option<u32>,
+    transport_replay: bool,
+) -> (u32, u32, u32) {
+    let mtu = compute_kcp_mtu(max_packet_size, max_payload, transport_replay);
+    let bdp_window = match (target_bps, rtt_ms) {
+        (Some(bps), Some(rtt)) => compute_bdp_window(mtu, bps, rtt),
+        _ => None,
+    };
+
+    let snd_wnd = send_window
+        .or(bdp_window)
+        .unwrap_or(KCP_SND_WND);
+    let rcv_wnd = recv_window
+        .or(bdp_window)
+        .unwrap_or(KCP_RCV_WND);
+    let max_snd_queue = max_snd_queue.unwrap_or(snd_wnd);
+
+    (snd_wnd, rcv_wnd, max_snd_queue)
+}
+
+fn should_accept_send(stats: &KcpStats, max_snd_queue: u32) -> bool {
+    if max_snd_queue == 0 {
+        return false;
+    }
+    stats.snd_queue_size < max_snd_queue
+}
+
 fn start_transport_logger() {
     if !telemetry::enabled() {
         return;
@@ -264,6 +325,16 @@ pub struct ServerConfig {
     pub max_packet_size: usize,
     /// Maximum payload size
     pub max_payload: usize,
+    /// Optional explicit KCP send window size (in segments)
+    pub send_window: Option<u32>,
+    /// Optional explicit KCP receive window size (in segments)
+    pub recv_window: Option<u32>,
+    /// Optional target throughput in bits per second for BDP-based window sizing
+    pub target_bps: Option<u64>,
+    /// Optional RTT estimate in milliseconds for BDP-based window sizing
+    pub rtt_ms: Option<u64>,
+    /// Optional maximum KCP send queue size (in segments)
+    pub max_snd_queue: Option<u32>,
     /// Transport replay protection enabled
     pub transport_replay: bool,
     /// Padding policy for transport packets
@@ -283,6 +354,11 @@ impl Default for ServerConfig {
         Self {
             max_packet_size: 1350,
             max_payload: 1200,
+            send_window: None,
+            recv_window: None,
+            target_bps: None,
+            rtt_ms: None,
+            max_snd_queue: None,
             transport_replay: false,
             padding_policy: PaddingPolicy {
                 enabled: false,
@@ -433,11 +509,21 @@ impl KcpServer {
             self.config.max_payload,
             self.config.transport_replay,
         );
+        let (snd_wnd, rcv_wnd, max_snd_queue) = resolve_kcp_windows(
+            self.config.max_packet_size,
+            self.config.max_payload,
+            self.config.send_window,
+            self.config.recv_window,
+            self.config.target_bps,
+            self.config.rtt_ms,
+            self.config.max_snd_queue,
+            self.config.transport_replay,
+        );
 
         let kcp_config = KcpConfig::new()
             .mtu(mtu)
-            .send_window(KCP_SND_WND)
-            .recv_window(KCP_RCV_WND)
+            .send_window(snd_wnd)
+            .recv_window(rcv_wnd)
             .stream_mode(true)
             .nodelay_config(NodeDelayConfig::custom(
                 true,
@@ -490,6 +576,7 @@ impl KcpServer {
                 peer_addr_for_task,
                 config,
                 counter,
+                max_snd_queue,
             )
             .await;
         });
@@ -605,6 +692,7 @@ async fn run_kcp_engine_server(
     peer_addr: SocketAddr,
     config: ServerConfig,
     counter: Arc<AtomicU64>,
+    max_snd_queue: u32,
 ) {
     use kcp_tokio::async_kcp::engine::KcpEngine;
     use tokio::sync::mpsc::error::TrySendError;
@@ -681,6 +769,7 @@ async fn run_kcp_engine_server(
     let mut pending_reads: VecDeque<Bytes> = VecDeque::new();
     let max_pending_reads = SMUX_MAX_RX_QUEUE;
     loop {
+        let allow_send = should_accept_send(engine.stats(), max_snd_queue);
         tokio::select! {
             // Incoming KCP packets from UDP (feed engine.input)
             Some(data) = input_rx.recv() => {
@@ -695,7 +784,7 @@ async fn run_kcp_engine_server(
             }
 
             // Application data to send via KCP (feed engine.send)
-            Some(data) = write_rx.recv() => {
+            Some(data) = write_rx.recv(), if allow_send => {
                 if let Some(ref mut tel) = kcp_telemetry {
                     tel.observe_app_send(data.len() as u64);
                 }
@@ -802,6 +891,16 @@ pub struct ClientConfig {
     pub max_packet_size: usize,
     /// Maximum payload size
     pub max_payload: usize,
+    /// Optional explicit KCP send window size (in segments)
+    pub send_window: Option<u32>,
+    /// Optional explicit KCP receive window size (in segments)
+    pub recv_window: Option<u32>,
+    /// Optional target throughput in bits per second for BDP-based window sizing
+    pub target_bps: Option<u64>,
+    /// Optional RTT estimate in milliseconds for BDP-based window sizing
+    pub rtt_ms: Option<u64>,
+    /// Optional maximum KCP send queue size (in segments)
+    pub max_snd_queue: Option<u32>,
     /// Transport replay protection enabled
     pub transport_replay: bool,
     /// Padding policy for transport packets
@@ -819,6 +918,11 @@ impl Default for ClientConfig {
         Self {
             max_packet_size: 1350,
             max_payload: 1200,
+            send_window: None,
+            recv_window: None,
+            target_bps: None,
+            rtt_ms: None,
+            max_snd_queue: None,
             transport_replay: false,
             padding_policy: PaddingPolicy {
                 enabled: false,
@@ -891,11 +995,21 @@ impl KcpClient {
             self.config.max_payload,
             self.config.transport_replay,
         );
+        let (snd_wnd, rcv_wnd, max_snd_queue) = resolve_kcp_windows(
+            self.config.max_packet_size,
+            self.config.max_payload,
+            self.config.send_window,
+            self.config.recv_window,
+            self.config.target_bps,
+            self.config.rtt_ms,
+            self.config.max_snd_queue,
+            self.config.transport_replay,
+        );
 
         let kcp_config = KcpConfig::new()
             .mtu(mtu)
-            .send_window(KCP_SND_WND)
-            .recv_window(KCP_RCV_WND)
+            .send_window(snd_wnd)
+            .recv_window(rcv_wnd)
             .stream_mode(true)
             .nodelay_config(NodeDelayConfig::custom(
                 true,
@@ -945,6 +1059,7 @@ impl KcpClient {
                 server_addr,
                 config,
                 counter,
+                max_snd_queue,
             )
             .await;
         });
@@ -1049,6 +1164,61 @@ impl KcpClient {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_bdp_window_uses_mss() {
+        let mtu = 1400;
+        let target_bps = 80_000_000;
+        let rtt_ms = 100;
+        let window = compute_bdp_window(mtu, target_bps, rtt_ms).unwrap();
+        assert_eq!(window, 727);
+    }
+
+    #[test]
+    fn resolve_kcp_windows_prefers_explicit_send_window() {
+        let mtu_packet = 1350;
+        let max_payload = 1200;
+        let target_bps = 80_000_000;
+        let rtt_ms = 100;
+        let explicit_send = 2000;
+
+        let expected_bdp = compute_bdp_window(
+            compute_kcp_mtu(mtu_packet, max_payload, false),
+            target_bps,
+            rtt_ms,
+        )
+        .unwrap();
+
+        let (snd, rcv, max_q) = resolve_kcp_windows(
+            mtu_packet,
+            max_payload,
+            Some(explicit_send),
+            None,
+            Some(target_bps),
+            Some(rtt_ms),
+            None,
+            false,
+        );
+
+        assert_eq!(snd, explicit_send);
+        assert_eq!(rcv, expected_bdp);
+        assert_eq!(max_q, explicit_send);
+    }
+
+    #[test]
+    fn should_accept_send_respects_queue_limit() {
+        let mut stats = KcpStats::default();
+        stats.snd_queue_size = 9;
+        assert!(should_accept_send(&stats, 10));
+        stats.snd_queue_size = 10;
+        assert!(!should_accept_send(&stats, 10));
+        assert!(!should_accept_send(&stats, 0));
+    }
+}
+
 /// Run the KCP engine for client-side connection.
 async fn run_kcp_engine_client(
     conv_id: u32,
@@ -1061,6 +1231,7 @@ async fn run_kcp_engine_client(
     _server_addr: SocketAddr,
     config: ClientConfig,
     counter: Arc<AtomicU64>,
+    max_snd_queue: u32,
 ) {
     use kcp_tokio::async_kcp::engine::KcpEngine;
     use tokio::sync::mpsc::error::TrySendError;
@@ -1137,6 +1308,7 @@ async fn run_kcp_engine_client(
     let mut pending_reads: VecDeque<Bytes> = VecDeque::new();
     let max_pending_reads = SMUX_MAX_RX_QUEUE;
     loop {
+        let allow_send = should_accept_send(engine.stats(), max_snd_queue);
         tokio::select! {
             // Incoming KCP packets from UDP (feed engine.input)
             Some(data) = input_rx.recv() => {
@@ -1151,7 +1323,7 @@ async fn run_kcp_engine_client(
             }
 
             // Application data to send via KCP (feed engine.send)
-            Some(data) = write_rx.recv() => {
+            Some(data) = write_rx.recv(), if allow_send => {
                 if let Some(ref mut tel) = kcp_telemetry {
                     tel.observe_app_send(data.len() as u64);
                 }

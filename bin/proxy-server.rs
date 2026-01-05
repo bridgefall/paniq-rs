@@ -35,6 +35,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .map(|k| k.max_packet_size)
             .unwrap_or(1350),
         max_payload: profile.kcp.as_ref().map(|k| k.max_payload).unwrap_or(1200),
+        send_window: None,
+        recv_window: None,
+        target_bps: None,
+        rtt_ms: None,
+        max_snd_queue: None,
         transport_replay: profile.obfuscation.transport_replay,
         idle_timeout_secs: 120,
         handshake_timeout_secs: 5,

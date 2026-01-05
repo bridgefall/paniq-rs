@@ -91,6 +91,16 @@ pub struct ClientConfigWrapper {
     pub max_packet_size: usize,
     /// Maximum payload size
     pub max_payload: usize,
+    /// Optional explicit KCP send window size (in segments)
+    pub send_window: Option<u32>,
+    /// Optional explicit KCP receive window size (in segments)
+    pub recv_window: Option<u32>,
+    /// Optional target throughput in bits per second for BDP-based window sizing
+    pub target_bps: Option<u64>,
+    /// Optional RTT estimate in milliseconds for BDP-based window sizing
+    pub rtt_ms: Option<u64>,
+    /// Optional maximum KCP send queue size (in segments)
+    pub max_snd_queue: Option<u32>,
     /// Transport replay protection enabled
     pub transport_replay: bool,
     /// Handshake timeout in seconds
@@ -106,6 +116,11 @@ impl Default for ClientConfigWrapper {
         Self {
             max_packet_size: 1350,
             max_payload: 1200,
+            send_window: None,
+            recv_window: None,
+            target_bps: None,
+            rtt_ms: None,
+            max_snd_queue: None,
             transport_replay: false,
             handshake_timeout_secs: 5,
             handshake_attempts: 3,
@@ -127,6 +142,11 @@ pub async fn connect(
     let client_config = ClientConfig {
         max_packet_size: config.max_packet_size,
         max_payload,
+        send_window: config.send_window,
+        recv_window: config.recv_window,
+        target_bps: config.target_bps,
+        rtt_ms: config.rtt_ms,
+        max_snd_queue: config.max_snd_queue,
         transport_replay: config.transport_replay,
         padding_policy: PaddingPolicy {
             enabled: false,

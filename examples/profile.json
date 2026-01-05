@@ -8,9 +8,11 @@
   "kcp": {
     "max_packet_size": 1350,
     "max_payload": 1200,
-    "keepalive": "20s",
-    "idle_timeout": "2m",
-    "max_streams": 256
+    "send_window": null,
+    "recv_window": null,
+    "target_bps": 100000000,
+    "rtt_ms": 100,
+    "max_snd_queue": null
   },
   "transport_padding": {
     "pad_min": 16,
