@@ -1,6 +1,7 @@
 pub mod envelope;
 pub mod obf;
 pub mod profile;
+mod telemetry;
 
 #[cfg(feature = "kcp")]
 pub mod kcp;

@@ -235,7 +235,18 @@ async fn run_benchmark(
     println!("Iterations: {}", iterations);
 
     // Enable logging (ok if already initialized)
-    let _ = tracing_subscriber::fmt::try_init();
+    let telemetry_enabled = std::env::var("PANIQ_KCP_TELEMETRY")
+        .ok()
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if telemetry_enabled {
+        let filter = tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(tracing::Level::INFO.into())
+            .from_env_lossy();
+        let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
+    } else {
+        let _ = tracing_subscriber::fmt::try_init();
+    }
 
     // Start HTTP server with test data
     let test_data = generate_test_data(data_size);

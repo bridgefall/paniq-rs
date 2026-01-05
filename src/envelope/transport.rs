@@ -2,6 +2,7 @@ use rand::RngCore;
 
 use crate::envelope::padding::PaddingPolicy;
 use crate::envelope::EnvelopeError;
+use crate::telemetry;
 
 const COUNTER_SIZE: usize = 8;
 const LEN_SIZE: usize = 2;
@@ -14,11 +15,13 @@ pub fn build_transport_payload<R: RngCore>(
     rng: &mut R,
 ) -> Result<Vec<u8>, EnvelopeError> {
     if payload.len() > u16::MAX as usize {
+        telemetry::record_transport_payload_too_large();
         return Err(EnvelopeError::PayloadTooLarge);
     }
     let pad_len = padding.padding_len(payload.len(), max_payload, rng);
     if payload.len() + pad_len + LEN_SIZE + counter.map(|_| COUNTER_SIZE).unwrap_or(0) > max_payload
     {
+        telemetry::record_transport_payload_too_large();
         return Err(EnvelopeError::PayloadTooLarge);
     }
     let mut out = Vec::with_capacity(COUNTER_SIZE + LEN_SIZE + payload.len() + pad_len);
@@ -32,6 +35,7 @@ pub fn build_transport_payload<R: RngCore>(
         rng.fill_bytes(&mut pad_buf);
         out.extend_from_slice(&pad_buf);
     }
+    telemetry::record_transport_out(payload.len(), pad_len, out.len());
     Ok(out)
 }
 
@@ -46,6 +50,7 @@ where
     let mut offset = 0;
     if expect_counter {
         if data.len() < COUNTER_SIZE {
+            telemetry::record_transport_invalid_length();
             return Err(EnvelopeError::InvalidLength);
         }
         let mut ctr_bytes = [0u8; COUNTER_SIZE];
@@ -54,11 +59,13 @@ where
         let counter = u64::from_be_bytes(ctr_bytes);
         if let Some(validator) = counter_validator.as_mut() {
             if !validator(counter) {
+                telemetry::record_transport_counter_reject();
                 return Err(EnvelopeError::CounterRejected);
             }
         }
     }
     if data.len() < offset + LEN_SIZE {
+        telemetry::record_transport_invalid_length();
         return Err(EnvelopeError::InvalidLength);
     }
     let mut len_bytes = [0u8; LEN_SIZE];
@@ -66,7 +73,10 @@ where
     offset += LEN_SIZE;
     let len = u16::from_be_bytes(len_bytes) as usize;
     if data.len() < offset + len {
+        telemetry::record_transport_invalid_length();
         return Err(EnvelopeError::InvalidLength);
     }
+    let pad_len = data.len().saturating_sub(offset + len);
+    telemetry::record_transport_in(len, pad_len, data.len());
     Ok(data[offset..offset + len].to_vec())
 }

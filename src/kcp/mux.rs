@@ -6,11 +6,105 @@
 use std::io;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
+use std::time::Instant;
 
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc;
 use tokio_util::sync::PollSender;
+
+use crate::telemetry;
+
+#[derive(Clone, Copy, Default)]
+struct TelemetryCounters {
+    app_send_bytes: u64,
+    app_recv_bytes: u64,
+    kcp_input_bytes: u64,
+    kcp_output_bytes: u64,
+}
+
+struct KcpTelemetry {
+    last_log: Instant,
+    last: TelemetryCounters,
+    total: TelemetryCounters,
+}
+
+impl KcpTelemetry {
+    fn new() -> Self {
+        Self {
+            last_log: Instant::now(),
+            last: TelemetryCounters::default(),
+            total: TelemetryCounters::default(),
+        }
+    }
+
+    fn observe_app_send(&mut self, bytes: u64) {
+        self.total.app_send_bytes = self.total.app_send_bytes.saturating_add(bytes);
+    }
+
+    fn observe_app_recv(&mut self, bytes: u64) {
+        self.total.app_recv_bytes = self.total.app_recv_bytes.saturating_add(bytes);
+    }
+
+    fn observe_kcp_input(&mut self, bytes: u64) {
+        self.total.kcp_input_bytes = self.total.kcp_input_bytes.saturating_add(bytes);
+    }
+
+    fn observe_kcp_output(&mut self, bytes: u64) {
+        self.total.kcp_output_bytes = self.total.kcp_output_bytes.saturating_add(bytes);
+    }
+
+    fn should_log(&self) -> bool {
+        self.last_log.elapsed() >= telemetry::TELEMETRY_INTERVAL
+    }
+
+    fn log_and_reset(&mut self, kcp: &kcp::Kcp) {
+        let elapsed = self.last_log.elapsed();
+        if elapsed.is_zero() {
+            return;
+        }
+
+        let delta = TelemetryCounters {
+            app_send_bytes: self.total.app_send_bytes.saturating_sub(self.last.app_send_bytes),
+            app_recv_bytes: self.total.app_recv_bytes.saturating_sub(self.last.app_recv_bytes),
+            kcp_input_bytes: self.total.kcp_input_bytes.saturating_sub(self.last.kcp_input_bytes),
+            kcp_output_bytes: self.total.kcp_output_bytes.saturating_sub(self.last.kcp_output_bytes),
+        };
+
+        let secs = elapsed.as_secs_f64();
+        let app_send_rate = delta.app_send_bytes as f64 / secs;
+        let app_recv_rate = delta.app_recv_bytes as f64 / secs;
+        let kcp_out_rate = delta.kcp_output_bytes as f64 / secs;
+        let kcp_in_rate = delta.kcp_input_bytes as f64 / secs;
+        let overhead_ratio = if delta.app_send_bytes > 0 {
+            delta.kcp_output_bytes as f64 / delta.app_send_bytes as f64
+        } else {
+            0.0
+        };
+
+        tracing::info!(
+            conv_id = kcp.conv(),
+            interval_ms = elapsed.as_millis(),
+            app_send_bytes = delta.app_send_bytes,
+            app_recv_bytes = delta.app_recv_bytes,
+            kcp_input_bytes = delta.kcp_input_bytes,
+            kcp_output_bytes = delta.kcp_output_bytes,
+            app_send_bps = app_send_rate,
+            app_recv_bps = app_recv_rate,
+            kcp_input_bps = kcp_in_rate,
+            kcp_output_bps = kcp_out_rate,
+            kcp_overhead_ratio = overhead_ratio,
+            kcp_waitsnd = kcp.get_waitsnd(),
+            kcp_nsnd_que = kcp.nsnd_que(),
+            kcp_nrcv_que = kcp.nrcv_que(),
+            kcp_nrcv_buf = kcp.nrcv_buf(),
+            "kcp_telemetry"
+        );
+
+        self.last = self.total;
+        self.last_log = Instant::now();
+    }
+}
 
 /// Channels for communicating with the KCP pump task.
 /// These are the channels that the pump task owns/receives.
@@ -193,14 +287,21 @@ pub async fn run_kcp_pump(
     tracing::info!("KCP pump task starting");
     // Update interval must match KCP nodelay interval (10ms) for optimal throughput
     let mut update_interval = tokio::time::interval(std::time::Duration::from_millis(10));
+    let mut telemetry = telemetry::enabled().then(KcpTelemetry::new);
 
     // Drain any initial output
-    drain_output(kcp.as_mut(), &output_tx).await?;
+    let initial_output = drain_output(kcp.as_mut(), &output_tx).await?;
+    if let Some(ref mut telemetry) = telemetry {
+        telemetry.observe_kcp_output(initial_output);
+    }
 
     loop {
         tokio::select! {
             // Incoming KCP packets from UDP (feed kcp.input)
             Some(data) = input_rx.recv() => {
+                if let Some(ref mut telemetry) = telemetry {
+                    telemetry.observe_kcp_input(data.len() as u64);
+                }
                 if let Err(e) = kcp.input(&data) {
                     tracing::warn!("KCP input error: {}", e);
                 } else {
@@ -213,6 +314,9 @@ pub async fn run_kcp_pump(
 
             // Application data to send via KCP (feed kcp.send)
             Some(data) = write_rx.recv() => {
+                if let Some(ref mut telemetry) = telemetry {
+                    telemetry.observe_app_send(data.len() as u64);
+                }
                 if let Err(e) = kcp.as_mut().send(&data) {
                     tracing::warn!("KCP send error: {}", e);
                 } else {
@@ -232,16 +336,29 @@ pub async fn run_kcp_pump(
         }
 
         // Drain KCP receive queue (application data received via KCP)
-        drain_recv(kcp.as_mut(), &read_tx).await?;
+        let recv_bytes = drain_recv(kcp.as_mut(), &read_tx).await?;
+        if let Some(ref mut telemetry) = telemetry {
+            telemetry.observe_app_recv(recv_bytes);
+        }
 
         // Drain KCP output queue (KCP packets to send via UDP)
-        drain_output(kcp.as_mut(), &output_tx).await?;
+        let output_bytes = drain_output(kcp.as_mut(), &output_tx).await?;
+        if let Some(ref mut telemetry) = telemetry {
+            telemetry.observe_kcp_output(output_bytes);
+            if telemetry.should_log() {
+                telemetry.log_and_reset(&kcp);
+            }
+        }
     }
 }
 
 /// Helper: drain KCP receive queue and send to read channel.
-async fn drain_recv(mut kcp: Pin<&mut kcp::Kcp>, read_tx: &mpsc::Sender<Bytes>) -> io::Result<()> {
+async fn drain_recv(
+    mut kcp: Pin<&mut kcp::Kcp>,
+    read_tx: &mpsc::Sender<Bytes>,
+) -> io::Result<u64> {
     let mut read_buf = vec![0u8; 8192];
+    let mut total = 0u64;
     loop {
         match kcp.recv(&mut read_buf) {
             Ok(0) => break,
@@ -253,6 +370,7 @@ async fn drain_recv(mut kcp: Pin<&mut kcp::Kcp>, read_tx: &mpsc::Sender<Bytes>) 
                         "read channel closed",
                     ));
                 }
+                total = total.saturating_add(n as u64);
             }
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
             Err(e) => {
@@ -261,16 +379,18 @@ async fn drain_recv(mut kcp: Pin<&mut kcp::Kcp>, read_tx: &mpsc::Sender<Bytes>) 
             }
         }
     }
-    Ok(())
+    Ok(total)
 }
 
 /// Helper: drain KCP output queue and send to output channel.
 async fn drain_output(
     mut kcp: Pin<&mut kcp::Kcp>,
     output_tx: &mpsc::Sender<Bytes>,
-) -> io::Result<()> {
+) -> io::Result<u64> {
+    let mut total = 0u64;
     while kcp.has_ouput() {
         if let Some(data) = kcp.pop_output() {
+            total = total.saturating_add(data.len() as u64);
             if output_tx.send(data.freeze()).await.is_err() {
                 return Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
@@ -281,7 +401,7 @@ async fn drain_output(
             break;
         }
     }
-    Ok(())
+    Ok(total)
 }
 
 /// Get current system time in milliseconds for KCP.

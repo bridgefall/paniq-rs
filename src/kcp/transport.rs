@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -17,6 +18,7 @@ use crate::envelope::padding::PaddingPolicy;
 use crate::envelope::transport::{build_transport_payload, decode_transport_payload};
 use crate::kcp::mux::{run_kcp_pump, KcpStreamAdapter};
 use crate::obf::{Framer, MessageType, SharedRng};
+use crate::telemetry;
 
 // Import kcp types - kcp-rs library is named "kcp" internally
 use kcp::Kcp;
@@ -39,6 +41,66 @@ fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay:
     let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
     let payload_budget = max_payload.min(max_packet_size);
     payload_budget.saturating_sub(overhead).max(1) as u32
+}
+
+fn start_transport_logger() {
+    if !telemetry::enabled() {
+        return;
+    }
+
+    static STARTED: OnceLock<()> = OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+
+    tokio::spawn(async move {
+        let mut last = telemetry::transport_snapshot();
+        let mut interval = tokio::time::interval(telemetry::TELEMETRY_INTERVAL);
+        loop {
+            interval.tick().await;
+            let current = telemetry::transport_snapshot();
+            let delta = current.delta(last);
+            last = current;
+
+            let secs = telemetry::TELEMETRY_INTERVAL.as_secs_f64();
+            let payload_out_bps = delta.transport_payload_out_bytes as f64 / secs;
+            let payload_in_bps = delta.transport_payload_in_bytes as f64 / secs;
+            let udp_out_bps = delta.udp_out_bytes as f64 / secs;
+            let udp_in_bps = delta.udp_in_bytes as f64 / secs;
+            let transport_overhead_ratio = if delta.transport_payload_out_bytes > 0 {
+                delta.transport_frame_out_bytes as f64 / delta.transport_payload_out_bytes as f64
+            } else {
+                0.0
+            };
+            let udp_overhead_ratio = if delta.transport_payload_out_bytes > 0 {
+                delta.udp_out_bytes as f64 / delta.transport_payload_out_bytes as f64
+            } else {
+                0.0
+            };
+
+            tracing::info!(
+                interval_ms = telemetry::TELEMETRY_INTERVAL.as_millis(),
+                udp_in_bytes = delta.udp_in_bytes,
+                udp_out_bytes = delta.udp_out_bytes,
+                transport_payload_in_bytes = delta.transport_payload_in_bytes,
+                transport_payload_out_bytes = delta.transport_payload_out_bytes,
+                transport_padding_in_bytes = delta.transport_padding_in_bytes,
+                transport_padding_out_bytes = delta.transport_padding_out_bytes,
+                transport_frame_in_bytes = delta.transport_frame_in_bytes,
+                transport_frame_out_bytes = delta.transport_frame_out_bytes,
+                transport_invalid_length = delta.transport_invalid_length,
+                transport_counter_reject = delta.transport_counter_reject,
+                transport_payload_too_large = delta.transport_payload_too_large,
+                payload_in_bps = payload_in_bps,
+                payload_out_bps = payload_out_bps,
+                udp_in_bps = udp_in_bps,
+                udp_out_bps = udp_out_bps,
+                transport_overhead_ratio = transport_overhead_ratio,
+                udp_overhead_ratio = udp_overhead_ratio,
+                "transport_telemetry"
+            );
+        }
+    });
 }
 
 /// KCP session state.
@@ -156,6 +218,7 @@ impl KcpServer {
 
     /// Start the server receive loop.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
+        start_transport_logger();
         let mut buf = vec![0u8; 65536];
         let mut update_interval = tokio::time::interval(Duration::from_millis(20));
 
@@ -182,6 +245,7 @@ impl KcpServer {
                 result = self.socket.recv_from(&mut buf) => {
                     match result {
                         Ok((len, peer_addr)) => {
+                            telemetry::record_udp_in(len);
                             let datagram = &buf[..len];
 
                             debug!("Server received {} bytes from {}", len, peer_addr);
@@ -464,6 +528,7 @@ async fn udp_send_loop(
         };
 
         // Send to peer
+        telemetry::record_udp_out(datagram.len());
         if let Err(e) = socket.send_to(&datagram, peer_addr).await {
             error!("Failed to send transport packet: {}", e);
             return;
@@ -525,6 +590,7 @@ async fn udp_send_loop_client(
         };
 
         // Send to peer
+        telemetry::record_udp_out(datagram.len());
         if let Err(e) = socket.send(&datagram).await {
             error!("Failed to send transport packet: {}", e);
             return;
@@ -733,6 +799,7 @@ impl KcpClient {
 
     /// Start the UDP receive loop (CRITICAL - this was missing!).
     fn start_udp_receive_loop(&self) {
+        start_transport_logger();
         let socket = self.socket.clone();
         let framer = self.framer.clone();
         let session = self.session.clone();
@@ -743,6 +810,7 @@ impl KcpClient {
             loop {
                 match socket.recv(&mut buf).await {
                     Ok(len) => {
+                        telemetry::record_udp_in(len);
                         let datagram = &buf[..len];
 
                         // Decode the framer
