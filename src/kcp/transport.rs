@@ -253,8 +253,8 @@ impl KcpServer {
             self.config.transport_replay,
         );
         kcp.as_mut().set_mtu(mtu)?;
-        // Enable congestion control (nc=false) for better WAN performance under load
-        kcp.as_mut().set_nodelay(true, 10, 2, false);
+        // Disable congestion control (nc=true) to match perf-1.0 baseline
+        kcp.as_mut().set_nodelay(true, 10, 2, true);
         kcp.as_mut().set_stream(true);
         // Set larger window sizes for high-throughput WAN scenarios
         // Default 32 caps throughput at ~(32 * MTU) / RTT
@@ -650,8 +650,8 @@ impl KcpClient {
             self.config.transport_replay,
         );
         kcp.as_mut().set_mtu(mtu)?;
-        // Enable congestion control (nc=false) for better WAN performance under load
-        kcp.as_mut().set_nodelay(true, 10, 2, false);
+        // Disable congestion control (nc=true) to match perf-1.0 baseline
+        kcp.as_mut().set_nodelay(true, 10, 2, true);
         kcp.as_mut().set_stream(true);
         // Set larger window sizes for high-throughput WAN scenarios
         // Default 32 caps throughput at ~(32 * MTU) / RTT
