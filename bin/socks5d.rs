@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -26,6 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = parse_args()?;
     let profile = Profile::from_file(&args.profile)?;
     let obf_config = profile.obf_config();
+    let framer = Framer::new(obf_config.clone()).expect("framer");
+
     let server_addr = profile.proxy_addr.parse()?;
 
     // Map profile config to client config
@@ -38,23 +39,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         preamble_delay_ms: 5,
     };
 
-    let mut conns = Vec::with_capacity(KCP_POOL_SIZE);
-    for idx in 0..KCP_POOL_SIZE {
-        let framer = Framer::new(obf_config.clone()).expect("framer");
-        let (_ep, conn) = connect(
-            std::net::UdpSocket::bind("0.0.0.0:0")?,
-            server_addr,
-            framer,
-            config,
-            &[],
-            "paniq",
-        )
-        .await?;
-        eprintln!("KCP session {}/{} connected", idx + 1, KCP_POOL_SIZE);
-        conns.push(Arc::new(conn));
-    }
+    let (_ep, conn) = connect(
+        std::net::UdpSocket::bind("0.0.0.0:0")?,
+        server_addr,
+        framer,
+        config,
+        &[],
+        "paniq",
+    )
+    .await?;
 
-    let connector = KcpPoolConnector::new(conns);
+    let connector = KcpConnector { conn };
 
     let auth = args
         .auth
@@ -108,31 +103,12 @@ fn parse_args() -> Result<Args, pico_args::Error> {
     })
 }
 
-const KCP_POOL_SIZE: usize = 4;
-
-struct KcpPoolConnector {
-    conns: Vec<Arc<paniq::kcp::client::Connection>>,
-    next: AtomicUsize,
-}
-
-impl KcpPoolConnector {
-    fn new(conns: Vec<Arc<paniq::kcp::client::Connection>>) -> Self {
-        debug_assert!(!conns.is_empty(), "KCP pool must be non-empty");
-        Self {
-            conns,
-            next: AtomicUsize::new(0),
-        }
-    }
-
-    fn pick_conn(&self) -> Arc<paniq::kcp::client::Connection> {
-        let idx = self.next.fetch_add(1, Ordering::Relaxed);
-        let slot = idx % self.conns.len();
-        self.conns[slot].clone()
-    }
+struct KcpConnector {
+    conn: paniq::kcp::client::Connection,
 }
 
 #[async_trait::async_trait]
-impl RelayConnector for KcpPoolConnector {
+impl RelayConnector for KcpConnector {
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, SocksError> {
         let mut buf = Vec::new();
         buf.push(0x01); // protocol version
@@ -162,8 +138,8 @@ impl RelayConnector for KcpPoolConnector {
 
         buf.extend_from_slice(&port.to_be_bytes());
 
-        let conn = self.pick_conn();
-        let (mut send, recv) = conn
+        let (mut send, recv) = self
+            .conn
             .open_bi()
             .await
             .map_err(|e| SocksError::Connector(e.to_string()))?;

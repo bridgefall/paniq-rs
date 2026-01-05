@@ -86,7 +86,6 @@ impl Connection {
 pub struct Endpoint;
 
 /// Client configuration.
-#[derive(Clone, Copy)]
 pub struct ClientConfigWrapper {
     /// Maximum packet size for transport payloads
     pub max_packet_size: usize,

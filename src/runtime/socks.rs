@@ -5,7 +5,6 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::kcp::client::{connect, ClientConfigWrapper};
 use crate::obf::Framer;
@@ -67,6 +66,7 @@ impl SocksHandle {
     /// A `SocksHandle` that can be used to manage the server's lifecycle.
     pub async fn spawn(config: SocksConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let obf_config = config.profile.obf_config();
+        let framer = Framer::new(obf_config)?;
         let server_addr = config.profile.proxy_addr.parse()?;
 
         // Map profile config to client config
@@ -89,22 +89,17 @@ impl SocksHandle {
             preamble_delay_ms: 5,
         };
 
-        let mut conns = Vec::with_capacity(KCP_POOL_SIZE);
-        for _ in 0..KCP_POOL_SIZE {
-            let framer = Framer::new(obf_config.clone())?;
-            let (_ep, conn) = connect(
-                std::net::UdpSocket::bind("0.0.0.0:0")?,
-                server_addr,
-                framer,
-                client_config,
-                &[],
-                "paniq",
-            )
-            .await?;
-            conns.push(Arc::new(conn));
-        }
+        let (_ep, conn) = connect(
+            std::net::UdpSocket::bind("0.0.0.0:0")?,
+            server_addr,
+            framer,
+            client_config,
+            &[],
+            "paniq",
+        )
+        .await?;
 
-        let connector = KcpPoolConnector::new(conns);
+        let connector = KcpConnector { conn };
 
         let auth = config
             .auth
@@ -188,31 +183,12 @@ impl Drop for SocksHandle {
 /// KCP connector that implements the RelayConnector trait for SOCKS5.
 ///
 /// This uses the production code path from `bin/socks5d.rs`.
-const KCP_POOL_SIZE: usize = 4;
-
-struct KcpPoolConnector {
-    conns: Vec<Arc<crate::kcp::client::Connection>>,
-    next: AtomicUsize,
-}
-
-impl KcpPoolConnector {
-    fn new(conns: Vec<Arc<crate::kcp::client::Connection>>) -> Self {
-        debug_assert!(!conns.is_empty(), "KCP pool must be non-empty");
-        Self {
-            conns,
-            next: AtomicUsize::new(0),
-        }
-    }
-
-    fn pick_conn(&self) -> Arc<crate::kcp::client::Connection> {
-        let idx = self.next.fetch_add(1, Ordering::Relaxed);
-        let slot = idx % self.conns.len();
-        self.conns[slot].clone()
-    }
+struct KcpConnector {
+    conn: crate::kcp::client::Connection,
 }
 
 #[async_trait::async_trait]
-impl RelayConnector for KcpPoolConnector {
+impl RelayConnector for KcpConnector {
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, SocksError> {
         let mut buf = Vec::new();
         buf.push(0x01); // protocol version
@@ -241,8 +217,8 @@ impl RelayConnector for KcpPoolConnector {
 
         buf.extend_from_slice(&port.to_be_bytes());
 
-        let conn = self.pick_conn();
-        let (mut send, recv) = conn
+        let (mut send, recv) = self
+            .conn
             .open_bi()
             .await
             .map_err(|e| SocksError::Connector(e.to_string()))?;
