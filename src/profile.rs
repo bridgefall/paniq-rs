@@ -37,6 +37,9 @@ pub struct Profile {
     pub obfuscation: ObfuscationConfig,
 }
 
+const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 5;
+const DEFAULT_PREAMBLE_DELAY_MS: u64 = 5;
+
 fn default_handshake_attempts() -> usize {
     3
 }
@@ -89,6 +92,31 @@ fn default_max_payload() -> usize {
 }
 fn default_max_streams() -> usize {
     256
+}
+
+fn default_handshake_timeout() -> Duration {
+    Duration::from_secs(DEFAULT_HANDSHAKE_TIMEOUT_SECS)
+}
+
+fn default_preamble_delay_ms() -> u64 {
+    DEFAULT_PREAMBLE_DELAY_MS
+}
+
+impl Default for KcpConfig {
+    fn default() -> Self {
+        Self {
+            max_packet_size: default_max_packet_size(),
+            max_payload: default_max_payload(),
+            keepalive: Duration::default(),
+            idle_timeout: Duration::default(),
+            max_streams: default_max_streams(),
+            send_window: None,
+            recv_window: None,
+            target_bps: None,
+            rtt_ms: None,
+            max_snd_queue: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -294,19 +322,27 @@ impl Profile {
         self.obfuscation.to_obf_config()
     }
 
+    pub fn handshake_timeout_or_default(&self) -> Duration {
+        self.handshake_timeout
+            .unwrap_or_else(default_handshake_timeout)
+    }
+
+    pub fn preamble_delay_ms_or_default(&self) -> u64 {
+        self.preamble_delay_ms
+            .unwrap_or_else(default_preamble_delay_ms)
+    }
+
     /// Create a test profile with minimal configuration for integration testing.
     ///
     /// This uses the same profile structure as production but with simplified
     /// values suitable for fast, deterministic tests.
     pub fn test_profile() -> Self {
-        use std::time::Duration;
-
         Self {
             name: "test".to_string(),
             proxy_addr: "127.0.0.1:19000".to_string(),
-            handshake_timeout: Some(Duration::from_secs(5)),
-            handshake_attempts: 3,
-            preamble_delay_ms: Some(5),
+            handshake_timeout: Some(default_handshake_timeout()),
+            handshake_attempts: default_handshake_attempts(),
+            preamble_delay_ms: Some(default_preamble_delay_ms()),
             preamble_jitter_ms: None,
             kcp: None,
             transport_padding: None,

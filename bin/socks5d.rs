@@ -34,18 +34,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .parse()?;
 
     // Map profile config to client config
+    let kcp_profile = profile.kcp.clone().unwrap_or_default();
     let config = ClientConfigWrapper {
-        max_packet_size: profile.kcp.as_ref().map(|k| k.max_packet_size).unwrap_or(1350),
-        max_payload: profile.kcp.as_ref().map(|k| k.max_payload).unwrap_or(1200),
-        send_window: None,
-        recv_window: None,
-        target_bps: None,
-        rtt_ms: None,
-        max_snd_queue: None,
+        max_packet_size: kcp_profile.max_packet_size,
+        max_payload: kcp_profile.max_payload,
+        send_window: kcp_profile.send_window,
+        recv_window: kcp_profile.recv_window,
+        target_bps: kcp_profile.target_bps,
+        rtt_ms: kcp_profile.rtt_ms,
+        max_snd_queue: kcp_profile.max_snd_queue,
         transport_replay: profile.obfuscation.transport_replay,
-        handshake_timeout_secs: 5,
-        handshake_attempts: 3,
-        preamble_delay_ms: 5,
+        handshake_timeout_secs: profile.handshake_timeout_or_default().as_secs(),
+        handshake_attempts: profile.handshake_attempts,
+        preamble_delay_ms: profile.preamble_delay_ms_or_default(),
     };
 
     let (_ep, conn) = connect(
