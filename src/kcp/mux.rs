@@ -22,7 +22,7 @@ pub struct KcpPumpChannels {
     /// pump sends: pump → smux reads (application data received via KCP)
     pub read_tx: mpsc::Sender<Bytes>,
     /// pump sends pump → UDP send loop (outgoing KCP packets to send via UDP)
-    pub output_tx: mpsc::Sender<Vec<u8>>,
+    pub output_tx: mpsc::Sender<Bytes>,
 }
 
 /// Channels for the transport layer (server/client).
@@ -31,7 +31,7 @@ pub struct KcpTransportChannels {
     /// transport sends: UDP → pump (send incoming KCP packets to pump)
     pub input_tx: mpsc::Sender<Vec<u8>>,
     /// transport receives: pump → UDP (receive outgoing KCP packets from pump)
-    pub output_rx: mpsc::Receiver<Vec<u8>>,
+    pub output_rx: mpsc::Receiver<Bytes>,
 }
 
 /// Stream adapter that implements AsyncRead + AsyncWrite using PollSender.
@@ -188,7 +188,7 @@ pub async fn run_kcp_pump(
     mut input_rx: mpsc::Receiver<Vec<u8>>,
     mut write_rx: mpsc::Receiver<Bytes>,
     read_tx: mpsc::Sender<Bytes>,
-    output_tx: mpsc::Sender<Vec<u8>>,
+    output_tx: mpsc::Sender<Bytes>,
 ) -> io::Result<()> {
     tracing::info!("KCP pump task starting");
     // Update interval must match KCP nodelay interval (10ms) for optimal throughput
@@ -267,11 +267,11 @@ async fn drain_recv(mut kcp: Pin<&mut kcp::Kcp>, read_tx: &mpsc::Sender<Bytes>) 
 /// Helper: drain KCP output queue and send to output channel.
 async fn drain_output(
     mut kcp: Pin<&mut kcp::Kcp>,
-    output_tx: &mpsc::Sender<Vec<u8>>,
+    output_tx: &mpsc::Sender<Bytes>,
 ) -> io::Result<()> {
     while kcp.has_ouput() {
         if let Some(data) = kcp.pop_output() {
-            if output_tx.send(data.to_vec()).await.is_err() {
+            if output_tx.send(data.freeze()).await.is_err() {
                 return Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "output channel closed",

@@ -18,9 +18,10 @@ use tokio::time::timeout;
 use support::StackHarness;
 
 /// Test file sizes for benchmarking (in bytes)
-const TEST_SIZE_SMALL: usize = 10 * 1024 * 1024; // 10 MB
-const TEST_SIZE_MEDIUM: usize = 50 * 1024 * 1024; // 50 MB
-const TEST_SIZE_LARGE: usize = 100 * 1024 * 1024; // 100 MB
+const BYTES_PER_MB: usize = 1024 * 1024;
+const TEST_SIZE_SMALL: usize = 10 * BYTES_PER_MB; // 10 MB
+const TEST_SIZE_MEDIUM: usize = 50 * BYTES_PER_MB; // 50 MB
+const TEST_SIZE_LARGE: usize = 100 * BYTES_PER_MB; // 100 MB
 
 /// Connection timeout for benchmark tests
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -78,7 +79,9 @@ async fn socks5_download(
     target_addr: SocketAddr,
     expected_bytes: usize,
 ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-    let mut socks_conn = tokio::net::TcpStream::connect(socks_addr).await?;
+    let mut socks_conn = timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(socks_addr))
+        .await
+        .map_err(|_| "SOCKS connect timeout")??;
     socks_conn.set_nodelay(true)?;
 
     // SOCKS5 handshake with auth
@@ -175,7 +178,9 @@ async fn socks5_download(
     }
 
     // Read response body
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let mb = (expected_bytes + (BYTES_PER_MB - 1)) / BYTES_PER_MB;
+    let transfer_timeout = TRANSFER_TIMEOUT_PER_MB * mb as u32;
+    let deadline = Instant::now() + transfer_timeout;
     while data.len() < expected_bytes {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {

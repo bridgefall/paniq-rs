@@ -417,7 +417,7 @@ async fn udp_send_loop(
     framer: Arc<Framer>,
     peer_addr: SocketAddr,
     _pump_handle: tokio::task::JoinHandle<()>,
-    mut output_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    mut output_rx: tokio::sync::mpsc::Receiver<bytes::Bytes>,
     config: ServerConfig,
 ) {
     let mut counter = 0u64;
@@ -426,7 +426,7 @@ async fn udp_send_loop(
         let payload = {
             let mut rng_guard = framer.rng().0.lock().unwrap();
             build_transport_payload(
-                &kcp_bytes,
+                kcp_bytes.as_ref(),
                 if config.transport_replay {
                     Some(counter)
                 } else {
@@ -478,7 +478,7 @@ async fn udp_send_loop_client(
     framer: Arc<Framer>,
     server_addr: SocketAddr,
     _pump_handle: tokio::task::JoinHandle<()>,
-    mut output_rx: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    mut output_rx: tokio::sync::mpsc::Receiver<bytes::Bytes>,
     config: ClientConfig,
 ) {
     let mut counter = 0u64;
@@ -487,7 +487,7 @@ async fn udp_send_loop_client(
         let payload = {
             let mut rng_guard = framer.rng().0.lock().unwrap();
             build_transport_payload(
-                &kcp_bytes,
+                kcp_bytes.as_ref(),
                 if config.transport_replay {
                     Some(counter)
                 } else {

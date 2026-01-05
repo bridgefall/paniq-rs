@@ -7,8 +7,10 @@ use paniq::obf::Framer;
 use paniq::profile::Profile;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::info_span;
-use tracing_subscriber::EnvFilter;
 use tracing::Instrument;
+use tracing_subscriber::EnvFilter;
+
+const RELAY_BUFFER_SIZE: usize = 32 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -152,29 +154,49 @@ async fn handle_stream(
     tracing::info!("Starting bidirectional relay");
     let (mut target_read, mut target_write) = target_stream.split();
 
+    // Helper function to check if an error is expected when closing a stream
+    // TODO: This is a bit of a hack, but it works for now. Make sure to reimplement this properly
+    fn is_expected_close_error(e: &std::io::Error) -> bool {
+        if matches!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::ConnectionAborted
+        ) {
+            return true;
+        }
+        let error_msg = e.to_string().to_lowercase();
+        error_msg.contains("tx is already closed")
+            || error_msg.contains("rx is already closed")
+            || error_msg.contains("stream is closed")
+            || error_msg.contains("connection closed")
+    }
+
     let client_to_target = async {
         tracing::debug!("client_to_target: Starting");
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
         let mut total = 0u64;
         loop {
             match recv.read(&mut buf).await {
                 Ok(0) => {
-                    tracing::debug!(
-                        bytes_in = total,
-                        "client_to_target: Got EOF from KCP recv"
-                    );
+                    tracing::debug!(bytes_in = total, "client_to_target: Got EOF from KCP recv");
                     break;
                 }
                 Ok(n) => {
-                    tracing::trace!(
-                        bytes = n,
-                        direction = "client_to_target",
-                        "Read from KCP"
-                    );
-                    target_write.write_all(&buf[..n]).await?;
+                    tracing::trace!(bytes = n, direction = "client_to_target", "Read from KCP");
+                    if let Err(e) = target_write.write_all(&buf[..n]).await {
+                        if is_expected_close_error(&e) {
+                            break;
+                        }
+                        return Err(e);
+                    }
                     total += n as u64;
                 }
                 Err(e) => {
+                    if is_expected_close_error(&e) {
+                        break;
+                    }
                     tracing::error!(error = %e, "client_to_target: Read error");
                     return Err(e);
                 }
@@ -188,27 +210,26 @@ async fn handle_stream(
 
     let target_to_client = async {
         tracing::debug!("target_to_client: Starting");
-        let mut buf = vec![0u8; 8192];
+        let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
         let mut total = 0u64;
         loop {
             match target_read.read(&mut buf).await {
                 Ok(0) => {
-                    tracing::debug!(
-                        bytes_out = total,
-                        "target_to_client: Got EOF from TCP read"
-                    );
+                    tracing::debug!(bytes_out = total, "target_to_client: Got EOF from TCP read");
                     break;
                 }
                 Ok(n) => {
-                    tracing::trace!(
-                        bytes = n,
-                        direction = "target_to_client",
-                        "Read from TCP"
-                    );
-                    send.write_all(&buf[..n]).await?;
+                    tracing::trace!(bytes = n, direction = "target_to_client", "Read from TCP");
+                    if send.write_all(&buf[..n]).await.is_err() {
+                        // KCP/smux may close send side at any time; treat as clean shutdown.
+                        break;
+                    }
                     total += n as u64;
                 }
                 Err(e) => {
+                    if is_expected_close_error(&e) {
+                        break;
+                    }
                     tracing::error!(error = %e, "target_to_client: Read error");
                     return Err(e);
                 }
@@ -224,11 +245,7 @@ async fn handle_stream(
 
     match result {
         Ok((sent, received)) => {
-            tracing::info!(
-                bytes_out = sent,
-                bytes_in = received,
-                "Relay complete"
-            );
+            tracing::info!(bytes_out = sent, bytes_in = received, "Relay complete");
         }
         Err(e) => {
             tracing::error!(error = %e, "Relay error");
