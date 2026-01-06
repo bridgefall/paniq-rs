@@ -1,4 +1,6 @@
+pub mod client;
 pub mod envelope;
+pub mod io;
 pub mod obf;
 pub mod profile;
 pub mod proxy_protocol;

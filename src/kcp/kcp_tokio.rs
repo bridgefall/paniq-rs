@@ -6,30 +6,31 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use futures::Future;
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc;
+use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 use crate::envelope::client::{client_handshake_async, TokioPacketConn};
 use crate::envelope::padding::PaddingPolicy;
 use crate::envelope::transport::{build_transport_payload, decode_transport_payload};
-use crate::kcp::mux::{KcpStreamAdapter};
+use crate::kcp::mux::KcpStreamAdapter;
 use crate::obf::{Framer, MessageType, SharedRng};
 use crate::telemetry;
 use kcp_tokio::async_kcp::engine::KcpEngine;
-use kcp_tokio::common::{KcpStats, constants as kcp_constants};
+use kcp_tokio::common::{constants as kcp_constants, KcpStats};
 use kcp_tokio::config::NodeDelayConfig;
 
 // Re-export kcp-tokio types for convenience
-pub use kcp_tokio::{KcpConfig, common::ConvId};
+pub use kcp_tokio::{common::ConvId, KcpConfig};
 
 const TRANSPORT_LEN_FIELD: usize = 2;
 const TRANSPORT_COUNTER_FIELD: usize = 8;
@@ -94,18 +95,25 @@ impl KcpTelemetry {
         }
 
         let delta = KcpTelemetryCounters {
-            app_send_bytes: self.total.app_send_bytes.saturating_sub(self.last.app_send_bytes),
-            app_recv_bytes: self.total.app_recv_bytes.saturating_sub(self.last.app_recv_bytes),
-            kcp_input_bytes: self.total.kcp_input_bytes.saturating_sub(self.last.kcp_input_bytes),
+            app_send_bytes: self
+                .total
+                .app_send_bytes
+                .saturating_sub(self.last.app_send_bytes),
+            app_recv_bytes: self
+                .total
+                .app_recv_bytes
+                .saturating_sub(self.last.app_recv_bytes),
+            kcp_input_bytes: self
+                .total
+                .kcp_input_bytes
+                .saturating_sub(self.last.kcp_input_bytes),
         };
 
         let secs = elapsed.as_secs_f64();
         let app_send_rate = delta.app_send_bytes as f64 / secs;
         let app_recv_rate = delta.app_recv_bytes as f64 / secs;
         let kcp_in_rate = delta.kcp_input_bytes as f64 / secs;
-        let kcp_bytes_sent = stats
-            .bytes_sent
-            .saturating_sub(self.last_stats.bytes_sent);
+        let kcp_bytes_sent = stats.bytes_sent.saturating_sub(self.last_stats.bytes_sent);
         let kcp_bytes_received = stats
             .bytes_received
             .saturating_sub(self.last_stats.bytes_received);
@@ -166,7 +174,12 @@ fn compute_kcp_mtu(
     transport_replay: bool,
     padding_reserve: usize,
 ) -> u32 {
-    let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
+    let overhead = TRANSPORT_LEN_FIELD
+        + if transport_replay {
+            TRANSPORT_COUNTER_FIELD
+        } else {
+            0
+        };
     let payload_budget = max_payload.min(max_packet_size);
     payload_budget
         .saturating_sub(overhead)
@@ -180,7 +193,12 @@ fn compute_kcp_coalesce_limit(
     transport_replay: bool,
     padding_reserve: usize,
 ) -> usize {
-    let mtu = compute_kcp_mtu(max_packet_size, max_payload, transport_replay, padding_reserve);
+    let mtu = compute_kcp_mtu(
+        max_packet_size,
+        max_payload,
+        transport_replay,
+        padding_reserve,
+    );
     let mss = mtu.saturating_sub(kcp_constants::IKCP_OVERHEAD) as usize;
     mss.max(1)
 }
@@ -256,7 +274,12 @@ fn resolve_kcp_windows(
     transport_replay: bool,
     padding_reserve: usize,
 ) -> (u32, u32, u32) {
-    let mtu = compute_kcp_mtu(max_packet_size, max_payload, transport_replay, padding_reserve);
+    let mtu = compute_kcp_mtu(
+        max_packet_size,
+        max_payload,
+        transport_replay,
+        padding_reserve,
+    );
     let bdp_window = match (target_bps, rtt_ms) {
         (Some(bps), Some(rtt)) => compute_bdp_window(mtu, bps, rtt),
         _ => None,
@@ -264,12 +287,8 @@ fn resolve_kcp_windows(
     let bdp_snd = bdp_window.map(|w| w.max(KCP_SND_WND));
     let bdp_rcv = bdp_window.map(|w| w.max(KCP_RCV_WND));
 
-    let snd_wnd = send_window
-        .or(bdp_snd)
-        .unwrap_or(KCP_SND_WND);
-    let rcv_wnd = recv_window
-        .or(bdp_rcv)
-        .unwrap_or(KCP_RCV_WND);
+    let snd_wnd = send_window.or(bdp_snd).unwrap_or(KCP_SND_WND);
+    let rcv_wnd = recv_window.or(bdp_rcv).unwrap_or(KCP_RCV_WND);
     let max_snd_queue = max_snd_queue.unwrap_or(snd_wnd);
 
     (snd_wnd, rcv_wnd, max_snd_queue)
@@ -297,10 +316,7 @@ fn is_fatal_kcp_error(err: &kcp_tokio::KcpError) -> bool {
     )
 }
 
-fn handle_kcp_result(
-    label: &str,
-    result: Result<(), kcp_tokio::KcpError>,
-) -> bool {
+fn handle_kcp_result(label: &str, result: Result<(), kcp_tokio::KcpError>) -> bool {
     if let Err(e) = result {
         warn!("KCP engine {} error: {:?}", label, e);
         return !is_fatal_kcp_error(&e);
@@ -426,6 +442,8 @@ pub struct KcpServer {
     conn_tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<super::server::IncomingConnection>>>>,
     /// Optional ready signal sender (for testing - signals when recv loop is active)
     ready_tx: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+    /// Shutdown token
+    shutdown: CancellationToken,
 }
 
 /// Server configuration.
@@ -488,7 +506,10 @@ impl KcpServer {
         config: ServerConfig,
     ) -> Result<Self, std::io::Error> {
         let socket = UdpSocket::bind(addr).await?;
-        info!("KCP server (kcp-tokio) listening on {}", socket.local_addr()?);
+        info!(
+            "KCP server (kcp-tokio) listening on {}",
+            socket.local_addr()?
+        );
         Ok(Self {
             socket: Arc::new(socket),
             framer: Arc::new(framer),
@@ -496,6 +517,7 @@ impl KcpServer {
             config,
             conn_tx: Arc::new(Mutex::new(None)),
             ready_tx: Arc::new(Mutex::new(None)),
+            shutdown: CancellationToken::new(),
         })
     }
 
@@ -515,6 +537,29 @@ impl KcpServer {
     /// Get the local address.
     pub fn local_addr(&self) -> SocketAddr {
         self.socket.local_addr().unwrap()
+    }
+
+    /// Shutdown the server and release all network resources.
+    ///
+    /// ### Invariants
+    /// - **Socket Release**: All active session loops are abort-signaled, ensuring that all Clones
+    ///   of the [`Arc<UdpSocket>`] are eventually dropped. This allows the OS to release the
+    ///   bound port for immediate reuse by other processes (or a restarted instance).
+    /// - **Receptor Termination**: The main receive loop terminates, preventing any new handshake
+    ///   initiations or transport packet processing.
+    pub fn shutdown(&self) {
+        self.shutdown.cancel();
+        // We can't easily wait for sessions to close here without making shutdown async,
+        // but aborting their handles will release the socket references quickly.
+        let sessions = self.sessions.clone();
+        tokio::spawn(async move {
+            let mut guard = sessions.lock().await;
+            for (_, mut session) in guard.drain() {
+                if let Some(handle) = session.udp_send_handle.take() {
+                    handle.abort();
+                }
+            }
+        });
     }
 
     /// Start the server receive loop.
@@ -582,10 +627,14 @@ impl KcpServer {
                     }
                 }
 
+                // Shutdown signal
+                _ = self.shutdown.cancelled() => {
+                    debug!("KCP server shutdown requested, exiting loop");
+                    break Ok(());
+                }
+
                 // Periodic session cleanup
                 _ = update_interval.tick() => {
-                    if iter_count <= 5 {
-                    }
                     self.update_sessions().await;
                 }
             }
@@ -649,9 +698,7 @@ impl KcpServer {
         let mut builder = async_smux::MuxBuilder::server();
         builder.with_max_tx_queue(std::num::NonZeroUsize::new(SMUX_MAX_TX_QUEUE).unwrap());
         builder.with_max_rx_queue(std::num::NonZeroUsize::new(SMUX_MAX_RX_QUEUE).unwrap());
-        let (connector, acceptor, worker) = builder
-            .with_connection(adapter)
-            .build();
+        let (connector, acceptor, worker) = builder.with_connection(adapter).build();
 
         // Spawn the mux worker task
         tokio::spawn(async move {
@@ -932,7 +979,8 @@ async fn run_kcp_engine_server(
 
         if allow_send && !pending_writes.is_empty() {
             if let Some(data) = pending_writes.pop_front() {
-                let batch = coalesce_write_batch(data, &mut pending_writes, &mut write_rx, coalesce_limit);
+                let batch =
+                    coalesce_write_batch(data, &mut pending_writes, &mut write_rx, coalesce_limit);
                 if let Some(ref mut tel) = kcp_telemetry {
                     tel.observe_app_send(batch.len() as u64);
                 }
@@ -978,7 +1026,7 @@ async fn run_kcp_engine_server(
                             return;
                         }
                     }
-                },
+                }
                 Ok(None) => break,
                 Err(e) => {
                     warn!("KCP recv error: {:?}", e);
@@ -1162,9 +1210,7 @@ impl KcpClient {
         let mut builder = async_smux::MuxBuilder::client();
         builder.with_max_tx_queue(std::num::NonZeroUsize::new(SMUX_MAX_TX_QUEUE).unwrap());
         builder.with_max_rx_queue(std::num::NonZeroUsize::new(SMUX_MAX_RX_QUEUE).unwrap());
-        let (connector, acceptor, worker) = builder
-            .with_connection(adapter)
-            .build();
+        let (connector, acceptor, worker) = builder.with_connection(adapter).build();
 
         // Spawn the mux worker task
         tokio::spawn(async move {
@@ -1257,8 +1303,12 @@ impl KcpClient {
                                 // Send to KCP engine via input_tx
                                 let session_guard = session.lock().await;
                                 if let Some(ref session) = *session_guard {
-                                    if let Err(_) = session.input_tx.send(Bytes::from(kcp_bytes)).await {
-                                        tracing::warn!("Failed to send to KCP engine - channel closed");
+                                    if let Err(_) =
+                                        session.input_tx.send(Bytes::from(kcp_bytes)).await
+                                    {
+                                        tracing::warn!(
+                                            "Failed to send to KCP engine - channel closed"
+                                        );
                                         break;
                                     }
                                 }
@@ -1266,7 +1316,9 @@ impl KcpClient {
                             MessageType::Initiation
                             | MessageType::CookieReply
                             | MessageType::Response => {
-                                tracing::debug!("Unexpected handshake message after connection established");
+                                tracing::debug!(
+                                    "Unexpected handshake message after connection established"
+                                );
                             }
                         }
                     }
@@ -1374,16 +1426,14 @@ mod tests {
         let mut pending = VecDeque::new();
         pending.push_back(Bytes::from_static(b"bb"));
 
-        let out = coalesce_write_batch(
-            Bytes::from_static(b"aa"),
-            &mut pending,
-            &mut rx,
-            6,
-        );
+        let out = coalesce_write_batch(Bytes::from_static(b"aa"), &mut pending, &mut rx, 6);
 
         assert_eq!(&out[..], b"aabbcc");
         assert!(pending.is_empty());
-        assert!(matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]
@@ -1394,12 +1444,7 @@ mod tests {
         let mut pending = VecDeque::new();
         pending.push_back(Bytes::from_static(b"bbbb"));
 
-        let out = coalesce_write_batch(
-            Bytes::from_static(b"aa"),
-            &mut pending,
-            &mut rx,
-            5,
-        );
+        let out = coalesce_write_batch(Bytes::from_static(b"aa"), &mut pending, &mut rx, 5);
 
         assert_eq!(&out[..], b"aa");
         assert_eq!(&pending.front().unwrap()[..], b"bbbb");
@@ -1551,7 +1596,8 @@ async fn run_kcp_engine_client(
 
         if allow_send && !pending_writes.is_empty() {
             if let Some(data) = pending_writes.pop_front() {
-                let batch = coalesce_write_batch(data, &mut pending_writes, &mut write_rx, coalesce_limit);
+                let batch =
+                    coalesce_write_batch(data, &mut pending_writes, &mut write_rx, coalesce_limit);
                 if let Some(ref mut tel) = kcp_telemetry {
                     tel.observe_app_send(batch.len() as u64);
                 }
@@ -1597,7 +1643,7 @@ async fn run_kcp_engine_client(
                             return;
                         }
                     }
-                },
+                }
                 Ok(None) => break,
                 Err(e) => {
                     warn!("KCP recv error: {:?}", e);

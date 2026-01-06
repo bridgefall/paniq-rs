@@ -26,7 +26,6 @@ const RELAY_BUFFER_SIZE: usize = 32768;
 
 // ===== Default Configuration Values =====
 
-
 /// Default connection idle timeout in seconds
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 120;
 
@@ -89,12 +88,8 @@ impl ProxyHandle {
 
         // Map profile config to server config
         let server_config = ServerConfigWrapper {
-            max_packet_size: config
-                .profile
-                .effective_kcp_max_packet_size(),
-            max_payload: config
-                .profile
-                .effective_kcp_max_payload(),
+            max_packet_size: config.profile.effective_kcp_max_packet_size(),
+            max_payload: config.profile.effective_kcp_max_payload(),
             send_window: config.profile.kcp.as_ref().and_then(|k| k.send_window),
             recv_window: config.profile.kcp.as_ref().and_then(|k| k.recv_window),
             target_bps: config.profile.kcp.as_ref().and_then(|k| k.target_bps),
@@ -120,6 +115,7 @@ impl ProxyHandle {
                     tokio::select! {
                         _ = shutdown.cancelled() => {
                             info!("Proxy server shutdown requested");
+                            endpoint.shutdown();
                             break;
                         }
                         maybe = endpoint.accept() => {

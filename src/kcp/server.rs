@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::envelope::padding::PaddingPolicy;
-use crate::kcp::kcp_tokio::{ServerConfig, KcpServer};
+use crate::kcp::kcp_tokio::{KcpServer, ServerConfig};
 use crate::kcp::mux::KcpStreamAdapter;
 use crate::obf::Framer;
 
@@ -44,6 +44,11 @@ impl Endpoint {
     pub fn local_addr(&self) -> SocketAddr {
         self.server.local_addr()
     }
+
+    /// Shutdown the server.
+    pub fn shutdown(&self) {
+        self.server.shutdown();
+    }
 }
 
 /// Represents an accepted incoming connection.
@@ -55,8 +60,14 @@ pub struct IncomingConnection {
 }
 
 impl IncomingConnection {
-    pub(crate) fn new(peer_addr: SocketAddr, acceptor: async_smux::MuxAcceptor<KcpStreamAdapter>) -> Self {
-        Self { peer_addr, acceptor }
+    pub(crate) fn new(
+        peer_addr: SocketAddr,
+        acceptor: async_smux::MuxAcceptor<KcpStreamAdapter>,
+    ) -> Self {
+        Self {
+            peer_addr,
+            acceptor,
+        }
     }
 
     /// Get the peer address.
@@ -87,8 +98,19 @@ impl ServerConnection {
 
     /// Accept a bidirectional stream.
     /// Returns (SendStream, RecvStream) halves for backward compatibility.
-    pub async fn accept_bi(&mut self) -> Result<(crate::kcp::client::SendStream, crate::kcp::client::RecvStream), KcpServerError> {
-        let stream = self.acceptor.accept().await
+    pub async fn accept_bi(
+        &mut self,
+    ) -> Result<
+        (
+            crate::kcp::client::SendStream,
+            crate::kcp::client::RecvStream,
+        ),
+        KcpServerError,
+    > {
+        let stream = self
+            .acceptor
+            .accept()
+            .await
             .ok_or_else(|| KcpServerError::Other("No incoming stream".into()))?;
         let (read, write) = tokio::io::split(stream);
         Ok((write, read))
