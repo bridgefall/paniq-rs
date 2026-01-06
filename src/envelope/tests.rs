@@ -4,7 +4,7 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use x25519_dalek::StaticSecret;
 
-use crate::envelope::client::{client_handshake, InMemoryConn};
+use crate::envelope::client::{client_handshake, InMemoryConn, PacketConn};
 use crate::envelope::enc_timestamp::{open_timestamp, seal_timestamp};
 use crate::envelope::mac1::{compute_mac1, verify_mac1};
 use crate::envelope::padding::PaddingPolicy;
@@ -97,10 +97,6 @@ fn encrypted_timestamp_cycle() {
     assert!(opened.duration_since(now).unwrap() < Duration::from_secs(1));
 }
 
-// TODO: This test has a synchronous deadlock issue with InMemoryConn
-// The client and server both block waiting for each other in synchronous threads
-// Need to rewrite using async/await or proper thread coordination
-#[ignore]
 #[test]
 fn client_server_handshake_cycle() {
     let (mut c1, c2) = InMemoryConn::pair();
@@ -124,5 +120,83 @@ fn client_server_handshake_cycle() {
     });
 
     client_handshake(&mut c1, &framer, b"init", &mut rng).unwrap();
+    handle.join().unwrap();
+}
+
+#[test]
+fn handshake_tolerates_junk_mismatch() {
+    let (mut c1, c2) = InMemoryConn::pair();
+
+    // Server expects 0 junk packets (Jc=0)
+    let mut server_cfg = test_framer().config();
+    server_cfg.jc = 0;
+    let server_framer = Framer::new(server_cfg).unwrap();
+
+    // Client sends 10 junk packets (Jc=10)
+    let mut client_cfg = test_framer().config();
+    client_cfg.jc = 10;
+    let client_framer = Framer::new(client_cfg).unwrap();
+
+    let mut rng = ChaCha20Rng::seed_from_u64(3);
+
+    let handle = std::thread::spawn(move || {
+        let mut server = crate::envelope::server::ServerConn::new(
+            c2,
+            server_framer,
+            ReplayCache::new(Duration::from_secs(10), 16),
+            SharedRng::from_seed(9),
+        );
+        let (msg, _) = server.handle_preamble().unwrap();
+        assert_eq!(msg, MessageType::Initiation);
+        // Server should respond (mock logic)
+        server.send_response(MessageType::Response, b"ok").unwrap();
+    });
+
+    client_handshake(&mut c1, &client_framer, b"init", &mut rng).unwrap();
+    handle.join().unwrap();
+}
+
+#[test]
+fn handshake_filters_invalid_header() {
+    let (mut c1, c2) = InMemoryConn::pair();
+    let server_framer = test_framer(); // H1="1-1"
+
+    let mut bad_client_cfg = test_framer().config();
+    bad_client_cfg.h1 = "9-9".into(); // Mismatching header
+    let bad_client_framer = Framer::new(bad_client_cfg).unwrap();
+
+    let good_client_framer = test_framer();
+
+    let mut rng = ChaCha20Rng::seed_from_u64(3);
+
+    let handle = std::thread::spawn(move || {
+        let mut server = crate::envelope::server::ServerConn::new(
+            c2,
+            server_framer,
+            ReplayCache::new(Duration::from_secs(10), 16),
+            SharedRng::from_seed(9),
+        );
+
+        // This should block ignoring the bad handshake, and only return when the good one arrives
+        let (msg, payload) = server.handle_preamble().unwrap();
+        assert_eq!(msg, MessageType::Initiation);
+        assert_eq!(payload, b"good_init");
+        server.send_response(MessageType::Response, b"ok").unwrap();
+    });
+
+    // 1. Manually send bad init frame
+    // We can't use client_handshake because it would block waiting for a response that never comes.
+    // So we assume the client just fires the packets.
+    let bad_frame = bad_client_framer
+        .encode_frame(MessageType::Initiation, b"bad_init")
+        .unwrap();
+    c1.send(bad_frame).unwrap();
+
+    // Give the server thread a tiny moment to process (and reject) the bad frame
+    std::thread::sleep(Duration::from_millis(50));
+
+    // 2. Now send valid handshake
+    client_handshake(&mut c1, &good_client_framer, b"good_init", &mut rng).unwrap();
+
     handle.join().unwrap();
 }

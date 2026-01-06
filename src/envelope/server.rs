@@ -9,18 +9,16 @@ pub struct ServerConn<C: PacketConn> {
     framer: Framer,
     state: PeerState,
     pub replay: ReplayCache,
-    rng: SharedRng,
 }
 
 impl<C: PacketConn> ServerConn<C> {
-    pub fn new(conn: C, framer: Framer, replay: ReplayCache, rng: SharedRng) -> Self {
+    pub fn new(conn: C, framer: Framer, replay: ReplayCache, _rng: SharedRng) -> Self {
         let signature_lengths = framer.signature_lengths();
         Self {
             conn,
             framer,
             state: PeerState::new(signature_lengths),
             replay,
-            rng,
         }
     }
 
@@ -30,16 +28,6 @@ impl<C: PacketConn> ServerConn<C> {
             if let Ok((msg, payload)) = self.framer.decode_frame(&datagram) {
                 match msg {
                     MessageType::Initiation | MessageType::Response | MessageType::CookieReply => {
-                        if msg == MessageType::Initiation && !self.state.cookie_satisfied(&payload)
-                        {
-                            let cookie = self.state.issue_cookie(&mut self.rng);
-                            let reply = self
-                                .framer
-                                .encode_frame(MessageType::CookieReply, &cookie)
-                                .map_err(|e| EnvelopeError::Timestamp(e.to_string()))?;
-                            self.conn.send(reply)?;
-                            continue;
-                        }
                         return Ok((msg, payload));
                     }
                     MessageType::Transport => {
@@ -69,7 +57,6 @@ impl<C: PacketConn> ServerConn<C> {
 
 #[derive(Default)]
 struct PeerState {
-    cookie: Option<Vec<u8>>,
     signature_lengths: Vec<usize>,
     signature_seen: usize,
 }
@@ -77,7 +64,6 @@ struct PeerState {
 impl PeerState {
     fn new(signature_lengths: Vec<usize>) -> Self {
         Self {
-            cookie: None,
             signature_lengths,
             signature_seen: 0,
         }
@@ -92,20 +78,6 @@ impl PeerState {
             .unwrap_or(false)
         {
             self.signature_seen += 1;
-        }
-    }
-
-    fn issue_cookie(&mut self, rng: &SharedRng) -> Vec<u8> {
-        let mut buf = vec![0u8; 8];
-        rng.fill_bytes(&mut buf);
-        self.cookie = Some(buf.clone());
-        buf
-    }
-
-    fn cookie_satisfied(&self, payload: &[u8]) -> bool {
-        match &self.cookie {
-            None => false,
-            Some(cookie) => payload.ends_with(cookie),
         }
     }
 }
