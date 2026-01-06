@@ -308,6 +308,34 @@ fn handle_kcp_result(
     true
 }
 
+fn log_smux_worker_result(result: Result<(), async_smux::error::MuxError>) {
+    if let Err(e) = result {
+        match e {
+            async_smux::error::MuxError::ConnectionClosed
+            | async_smux::error::MuxError::StreamClosed(_) => {
+                tracing::debug!("Smux worker closed: {:?}", e);
+            }
+            async_smux::error::MuxError::IoError(io) => {
+                let expected = matches!(
+                    io.kind(),
+                    std::io::ErrorKind::BrokenPipe
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::NotConnected
+                        | std::io::ErrorKind::ConnectionAborted
+                );
+                if expected {
+                    tracing::debug!("Smux worker closed: {:?}", e);
+                } else {
+                    error!("Smux worker error: {:?}", e);
+                }
+            }
+            _ => {
+                error!("Smux worker error: {:?}", e);
+            }
+        }
+    }
+}
+
 fn start_transport_logger() {
     if !telemetry::enabled() {
         return;
@@ -627,10 +655,7 @@ impl KcpServer {
 
         // Spawn the mux worker task
         tokio::spawn(async move {
-            let res = worker.await;
-            if let Err(e) = res {
-                error!("Smux worker error: {:?}", e);
-            }
+            log_smux_worker_result(worker.await);
         });
 
         // Spawn the KCP engine task
@@ -1143,9 +1168,7 @@ impl KcpClient {
 
         // Spawn the mux worker task
         tokio::spawn(async move {
-            if let Err(e) = worker.await {
-                error!("Smux worker error: {:?}", e);
-            }
+            log_smux_worker_result(worker.await);
         });
 
         // Spawn the KCP engine task
