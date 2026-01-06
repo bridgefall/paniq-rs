@@ -185,18 +185,112 @@ fn handshake_filters_invalid_header() {
     });
 
     // 1. Manually send bad init frame
-    // We can't use client_handshake because it would block waiting for a response that never comes.
-    // So we assume the client just fires the packets.
     let bad_frame = bad_client_framer
         .encode_frame(MessageType::Initiation, b"bad_init")
         .unwrap();
     c1.send(bad_frame).unwrap();
 
-    // Give the server thread a tiny moment to process (and reject) the bad frame
-    std::thread::sleep(Duration::from_millis(50));
-
     // 2. Now send valid handshake
     client_handshake(&mut c1, &good_client_framer, b"good_init", &mut rng).unwrap();
 
     handle.join().unwrap();
+}
+
+#[test]
+fn handshake_interspersed_noise_tolerance() {
+    let (mut c1, c2) = InMemoryConn::pair();
+    let framer = test_framer();
+    let mut rng = ChaCha20Rng::seed_from_u64(42);
+
+    let handle = std::thread::spawn(move || {
+        let mut server = crate::envelope::server::ServerConn::new(
+            c2,
+            framer,
+            ReplayCache::new(Duration::from_secs(10), 16),
+            SharedRng::from_seed(9),
+        );
+        let (msg, payload) = server.handle_preamble().unwrap();
+        assert_eq!(msg, MessageType::Initiation);
+        assert_eq!(payload, b"finally_good");
+        server.send_response(MessageType::Response, b"ok").unwrap();
+    });
+
+    // Send a messy sequence of noise
+    for _ in 0..5 {
+        c1.send(vec![1, 2, 3]).unwrap(); // Junk
+    }
+
+    // Send signatures (which server currently ignores as noise)
+    let framer_complex = test_framer();
+    for sig in framer_complex.signature_datagrams().unwrap() {
+        c1.send(sig).unwrap();
+    }
+
+    // Interspersed junk
+    c1.send(vec![0u8; 100]).unwrap();
+
+    // Finally the good one
+    client_handshake(&mut c1, &framer_complex, b"finally_good", &mut rng).unwrap();
+
+    handle.join().unwrap();
+}
+
+#[test]
+fn handshake_strict_padding_match() {
+    let (mut c1, c2) = InMemoryConn::pair();
+
+    // Server expects S1=20
+    let mut server_cfg = test_framer().config();
+    server_cfg.s1 = 20;
+    let server_framer = Framer::new(server_cfg).unwrap();
+
+    // Client sends S1=10
+    let mut client_cfg = test_framer().config();
+    client_cfg.s1 = 10;
+    let client_framer = Framer::new(client_cfg).unwrap();
+
+    let mut rng = ChaCha20Rng::seed_from_u64(3);
+
+    std::thread::spawn(move || {
+        let mut server = crate::envelope::server::ServerConn::new(
+            c2,
+            server_framer,
+            ReplayCache::new(Duration::from_secs(10), 16),
+            SharedRng::from_seed(9),
+        );
+        let _ = server.handle_preamble();
+    });
+
+    // This should timeout (Err) because server is looking at the wrong offset for the header
+    let res = client_handshake(&mut c1, &client_framer, b"init", &mut rng);
+    assert!(res.is_err());
+}
+
+#[test]
+fn handshake_strict_header_match() {
+    let (mut c1, c2) = InMemoryConn::pair();
+
+    // Server expects H1="1-1"
+    let server_framer = test_framer();
+
+    // Client sends H1="9-9"
+    let mut client_cfg = test_framer().config();
+    client_cfg.h1 = "9-9".into();
+    let client_framer = Framer::new(client_cfg).unwrap();
+
+    let mut rng = ChaCha20Rng::seed_from_u64(3);
+
+    std::thread::spawn(move || {
+        let mut server = crate::envelope::server::ServerConn::new(
+            c2,
+            server_framer,
+            ReplayCache::new(Duration::from_secs(10), 16),
+            SharedRng::from_seed(9),
+        );
+        let _ = server.handle_preamble();
+    });
+
+    // Should timeout because header validation fails
+    let res = client_handshake(&mut c1, &client_framer, b"init", &mut rng);
+    assert!(res.is_err());
 }

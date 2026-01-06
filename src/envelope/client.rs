@@ -70,9 +70,17 @@ impl PacketConn for InMemoryConn {
     }
 
     fn recv(&mut self) -> Result<Vec<u8>, EnvelopeError> {
+        /// Timeout for in-memory recv to prevent infinite blocking in unit tests
+        /// when one side is expecting data that never arrives (e.g. failed handshake).
+        const RECV_TIMEOUT: Duration = Duration::from_millis(100);
+
+        let start = Instant::now();
         loop {
             if let Some(data) = self.inbox.lock().unwrap().pop_front() {
                 return Ok(data);
+            }
+            if start.elapsed() > RECV_TIMEOUT {
+                return Err(EnvelopeError::HandshakeTimeout);
             }
             sleep(Duration::from_millis(1));
         }
