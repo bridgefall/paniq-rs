@@ -310,7 +310,7 @@ fn handle_kcp_result(
 
 fn log_smux_worker_result(result: Result<(), async_smux::error::MuxError>) {
     if let Err(e) = result {
-        match e {
+        match &e {
             async_smux::error::MuxError::ConnectionClosed
             | async_smux::error::MuxError::StreamClosed(_) => {
                 tracing::debug!("Smux worker closed: {:?}", e);
