@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::Future;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
@@ -24,6 +24,7 @@ use crate::envelope::transport::{build_transport_payload, decode_transport_paylo
 use crate::kcp::mux::{KcpStreamAdapter};
 use crate::obf::{Framer, MessageType, SharedRng};
 use crate::telemetry;
+use kcp_tokio::async_kcp::engine::KcpEngine;
 use kcp_tokio::common::{KcpStats, constants as kcp_constants};
 use kcp_tokio::config::NodeDelayConfig;
 
@@ -168,6 +169,16 @@ fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay:
     payload_budget.saturating_sub(overhead).max(1) as u32
 }
 
+fn compute_kcp_coalesce_limit(
+    max_packet_size: usize,
+    max_payload: usize,
+    transport_replay: bool,
+) -> usize {
+    let mtu = compute_kcp_mtu(max_packet_size, max_payload, transport_replay);
+    let mss = mtu.saturating_sub(kcp_constants::IKCP_OVERHEAD) as usize;
+    mss.max(1)
+}
+
 fn compute_bdp_window(mtu: u32, target_bps: u64, rtt_ms: u64) -> Option<u32> {
     if target_bps == 0 || rtt_ms == 0 {
         return None;
@@ -190,6 +201,42 @@ fn compute_bdp_window(mtu: u32, target_bps: u64, rtt_ms: u64) -> Option<u32> {
     let window = (inflight_bytes + mss as u128 - 1) / mss as u128;
     let window = window.clamp(MIN_KCP_WINDOW as u128, u32::MAX as u128) as u32;
     Some(window)
+}
+
+fn coalesce_write_batch(
+    first: Bytes,
+    pending_writes: &mut VecDeque<Bytes>,
+    write_rx: &mut mpsc::Receiver<Bytes>,
+    max_bytes: usize,
+) -> Bytes {
+    if max_bytes == 0 || first.len() >= max_bytes {
+        return first;
+    }
+
+    let mut buf = BytesMut::with_capacity(max_bytes.max(first.len()));
+    buf.extend_from_slice(&first);
+
+    while buf.len() < max_bytes {
+        let next = if let Some(next) = pending_writes.pop_front() {
+            Some(next)
+        } else {
+            match write_rx.try_recv() {
+                Ok(next) => Some(next),
+                Err(mpsc::error::TryRecvError::Empty) => None,
+                Err(mpsc::error::TryRecvError::Disconnected) => None,
+            }
+        };
+
+        let Some(next) = next else { break };
+        if buf.len() + next.len() <= max_bytes {
+            buf.extend_from_slice(&next);
+        } else {
+            pending_writes.push_front(next);
+            break;
+        }
+    }
+
+    buf.freeze()
 }
 
 fn resolve_kcp_windows(
@@ -695,12 +742,16 @@ async fn run_kcp_engine_server(
     counter: Arc<AtomicU64>,
     max_snd_queue: u32,
 ) {
-    use kcp_tokio::async_kcp::engine::KcpEngine;
     use tokio::sync::mpsc::error::TrySendError;
 
     // Create KCP engine
     let conv = ConvId::from(conv_id);
     let mut engine = KcpEngine::new(conv, kcp_config);
+    let coalesce_limit = compute_kcp_coalesce_limit(
+        config.max_packet_size,
+        config.max_payload,
+        config.transport_replay,
+    );
 
     // Set output function for sending KCP packets via UDP with envelope framing
     let socket_clone = socket.clone();
@@ -768,6 +819,7 @@ async fn run_kcp_engine_server(
     // Main I/O loop with periodic updates
     let mut update_interval = tokio::time::interval(Duration::from_millis(10));
     let mut pending_reads: VecDeque<Bytes> = VecDeque::new();
+    let mut pending_writes: VecDeque<Bytes> = VecDeque::new();
     let max_pending_reads = SMUX_MAX_RX_QUEUE;
     loop {
         let allow_send = should_accept_send(engine.stats(), max_snd_queue);
@@ -785,11 +837,12 @@ async fn run_kcp_engine_server(
             }
 
             // Application data to send via KCP (feed engine.send)
-            Some(data) = write_rx.recv(), if allow_send => {
+            Some(data) = write_rx.recv(), if allow_send && pending_writes.is_empty() => {
+                let batch = coalesce_write_batch(data, &mut pending_writes, &mut write_rx, coalesce_limit);
                 if let Some(ref mut tel) = kcp_telemetry {
-                    tel.observe_app_send(data.len() as u64);
+                    tel.observe_app_send(batch.len() as u64);
                 }
-                if let Err(e) = engine.send(data).await {
+                if let Err(e) = engine.send(batch).await {
                     warn!("KCP engine send error: {:?}", e);
                 } else if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
@@ -808,6 +861,20 @@ async fn run_kcp_engine_server(
                 if engine.is_dead() {
                     info!("KCP engine connection is dead, exiting");
                     break;
+                }
+            }
+        }
+
+        if allow_send && !pending_writes.is_empty() {
+            if let Some(data) = pending_writes.pop_front() {
+                let batch = coalesce_write_batch(data, &mut pending_writes, &mut write_rx, coalesce_limit);
+                if let Some(ref mut tel) = kcp_telemetry {
+                    tel.observe_app_send(batch.len() as u64);
+                }
+                if let Err(e) = engine.send(batch).await {
+                    warn!("KCP engine send error: {:?}", e);
+                } else if let Err(e) = engine.update().await {
+                    warn!("KCP engine update error: {:?}", e);
                 }
             }
         }
@@ -1219,6 +1286,46 @@ mod tests {
         assert!(!should_accept_send(&stats, 10));
         assert!(!should_accept_send(&stats, 0));
     }
+
+    #[test]
+    fn coalesce_write_batch_prefers_pending_over_channel() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(Bytes::from_static(b"cc")).unwrap();
+
+        let mut pending = VecDeque::new();
+        pending.push_back(Bytes::from_static(b"bb"));
+
+        let out = coalesce_write_batch(
+            Bytes::from_static(b"aa"),
+            &mut pending,
+            &mut rx,
+            6,
+        );
+
+        assert_eq!(&out[..], b"aabbcc");
+        assert!(pending.is_empty());
+        assert!(matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)));
+    }
+
+    #[test]
+    fn coalesce_write_batch_respects_limit_and_keeps_pending() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(Bytes::from_static(b"cc")).unwrap();
+
+        let mut pending = VecDeque::new();
+        pending.push_back(Bytes::from_static(b"bbbb"));
+
+        let out = coalesce_write_batch(
+            Bytes::from_static(b"aa"),
+            &mut pending,
+            &mut rx,
+            5,
+        );
+
+        assert_eq!(&out[..], b"aa");
+        assert_eq!(&pending.front().unwrap()[..], b"bbbb");
+        assert_eq!(&rx.try_recv().unwrap()[..], b"cc");
+    }
 }
 
 /// Run the KCP engine for client-side connection.
@@ -1235,12 +1342,16 @@ async fn run_kcp_engine_client(
     counter: Arc<AtomicU64>,
     max_snd_queue: u32,
 ) {
-    use kcp_tokio::async_kcp::engine::KcpEngine;
     use tokio::sync::mpsc::error::TrySendError;
 
     // Create KCP engine
     let conv = ConvId::from(conv_id);
     let mut engine = KcpEngine::new(conv, kcp_config);
+    let coalesce_limit = compute_kcp_coalesce_limit(
+        config.max_packet_size,
+        config.max_payload,
+        config.transport_replay,
+    );
 
     // Set output function for sending KCP packets via UDP with envelope framing
     let socket_clone = socket.clone();
@@ -1308,6 +1419,7 @@ async fn run_kcp_engine_client(
     // Main I/O loop with periodic updates
     let mut update_interval = tokio::time::interval(Duration::from_millis(10));
     let mut pending_reads: VecDeque<Bytes> = VecDeque::new();
+    let mut pending_writes: VecDeque<Bytes> = VecDeque::new();
     let max_pending_reads = SMUX_MAX_RX_QUEUE;
     loop {
         let allow_send = should_accept_send(engine.stats(), max_snd_queue);
@@ -1325,11 +1437,12 @@ async fn run_kcp_engine_client(
             }
 
             // Application data to send via KCP (feed engine.send)
-            Some(data) = write_rx.recv(), if allow_send => {
+            Some(data) = write_rx.recv(), if allow_send && pending_writes.is_empty() => {
+                let batch = coalesce_write_batch(data, &mut pending_writes, &mut write_rx, coalesce_limit);
                 if let Some(ref mut tel) = kcp_telemetry {
-                    tel.observe_app_send(data.len() as u64);
+                    tel.observe_app_send(batch.len() as u64);
                 }
-                if let Err(e) = engine.send(data).await {
+                if let Err(e) = engine.send(batch).await {
                     warn!("KCP engine send error: {:?}", e);
                 } else if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
@@ -1348,6 +1461,20 @@ async fn run_kcp_engine_client(
                 if engine.is_dead() {
                     info!("KCP engine connection is dead, exiting");
                     break;
+                }
+            }
+        }
+
+        if allow_send && !pending_writes.is_empty() {
+            if let Some(data) = pending_writes.pop_front() {
+                let batch = coalesce_write_batch(data, &mut pending_writes, &mut write_rx, coalesce_limit);
+                if let Some(ref mut tel) = kcp_telemetry {
+                    tel.observe_app_send(batch.len() as u64);
+                }
+                if let Err(e) = engine.send(batch).await {
+                    warn!("KCP engine send error: {:?}", e);
+                } else if let Err(e) = engine.update().await {
+                    warn!("KCP engine update error: {:?}", e);
                 }
             }
         }
