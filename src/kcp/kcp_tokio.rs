@@ -595,30 +595,32 @@ impl KcpServer {
                             debug!("Server received {} bytes from {}", len, peer_addr);
 
                             // Decode the framer
-                            let (msg_type, payload) = match self.framer.decode_frame(datagram) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    debug!("Failed to decode frame from {}: {}", peer_addr, e);
-                                    continue;
-                                }
-                            };
+                            match self.framer.decode_frame(datagram) {
+                                Ok((msg_type, payload)) => {
+                                    debug!("Decoded message type: {:?}, payload length: {}", msg_type, payload.len());
+                                    trace!(target: "paniq::transport_dump", direction = "rx", peer = %peer_addr, len = len, msg_type = msg_type.into_u8(), hex = %hex::encode(&buf[..len]));
 
-                            debug!("Decoded message type: {:?}, payload length: {}", msg_type, payload.len());
-                            trace!(target: "paniq::transport_dump", direction = "rx", peer = %peer_addr, len = len, msg_type = msg_type.into_u8(), hex = %hex::encode(&buf[..len]));
-
-                            match msg_type {
-                                MessageType::Transport => {
-                                    // Handle KCP transport packet
-                                    self.handle_transport(peer_addr, payload).await;
-                                }
-                                MessageType::Initiation => {
-                                    // Handle handshake initiation
-                                    if let Err(e) = self.handle_handshake_initiation(peer_addr, payload).await {
-                                        warn!("Handshake failed from {}: {}", peer_addr, e);
+                                    match msg_type {
+                                        MessageType::Transport => {
+                                            // Handle KCP transport packet
+                                            self.handle_transport(peer_addr, payload).await;
+                                        }
+                                        MessageType::Initiation => {
+                                            // Handle handshake initiation
+                                            if let Err(e) = self.handle_handshake_initiation(peer_addr, payload).await {
+                                                warn!("Handshake failed from {}: {}", peer_addr, e);
+                                            }
+                                        }
+                                        MessageType::CookieReply | MessageType::Response => {
+                                            debug!("Unexpected handshake message from {}: {:?}", peer_addr, msg_type);
+                                        }
                                     }
                                 }
-                                MessageType::CookieReply | MessageType::Response => {
-                                    debug!("Unexpected handshake message from {}: {:?}", peer_addr, msg_type);
+                                Err(e) => {
+                                    // Log junk/invalid packets to transport dump
+                                    trace!(target: "paniq::transport_dump", direction = "rx", peer = %peer_addr, len = len, msg_type = 0, hex = %hex::encode(&buf[..len]));
+                                    debug!("Failed to decode frame from {}: {}", peer_addr, e);
+                                    continue;
                                 }
                             }
                         }
@@ -1280,50 +1282,54 @@ impl KcpClient {
                         let datagram = &buf[..len];
 
                         // Decode the framer
-                        let (msg_type, payload) = match framer.decode_frame(datagram) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::debug!("Failed to decode frame: {}", e);
-                                continue;
-                            }
-                        };
+                        match framer.decode_frame(datagram) {
+                            Ok((msg_type, payload)) => {
+                                trace!(target: "paniq::transport_dump", direction = "rx", peer = %server_addr, len = len, msg_type = msg_type.into_u8(), hex = %hex::encode(&buf[..len]));
 
-                        trace!(target: "paniq::transport_dump", direction = "rx", peer = %server_addr, len = len, msg_type = msg_type.into_u8(), hex = %hex::encode(&buf[..len]));
+                                match msg_type {
+                                    MessageType::Transport => {
+                                        // Decode transport payload
+                                        let kcp_bytes = match decode_transport_payload(
+                                            &payload,
+                                            transport_replay,
+                                            None::<&mut Box<dyn FnMut(u64) -> bool>>,
+                                        ) {
+                                            Ok(bytes) => bytes,
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    "Failed to decode transport payload: {}",
+                                                    e
+                                                );
+                                                continue;
+                                            }
+                                        };
 
-                        match msg_type {
-                            MessageType::Transport => {
-                                // Decode transport payload
-                                let kcp_bytes = match decode_transport_payload(
-                                    &payload,
-                                    transport_replay,
-                                    None::<&mut Box<dyn FnMut(u64) -> bool>>,
-                                ) {
-                                    Ok(bytes) => bytes,
-                                    Err(e) => {
-                                        tracing::warn!("Failed to decode transport payload: {}", e);
-                                        continue;
+                                        // Send to KCP engine via input_tx
+                                        let session_guard = session.lock().await;
+                                        if let Some(ref session) = *session_guard {
+                                            if let Err(_) =
+                                                session.input_tx.send(Bytes::from(kcp_bytes)).await
+                                            {
+                                                tracing::warn!(
+                                                    "Failed to send to KCP engine - channel closed"
+                                                );
+                                                break;
+                                            }
+                                        }
                                     }
-                                };
-
-                                // Send to KCP engine via input_tx
-                                let session_guard = session.lock().await;
-                                if let Some(ref session) = *session_guard {
-                                    if let Err(_) =
-                                        session.input_tx.send(Bytes::from(kcp_bytes)).await
-                                    {
-                                        tracing::warn!(
-                                            "Failed to send to KCP engine - channel closed"
+                                    MessageType::Initiation
+                                    | MessageType::CookieReply
+                                    | MessageType::Response => {
+                                        tracing::debug!(
+                                            "Unexpected handshake message after connection established"
                                         );
-                                        break;
                                     }
                                 }
                             }
-                            MessageType::Initiation
-                            | MessageType::CookieReply
-                            | MessageType::Response => {
-                                tracing::debug!(
-                                    "Unexpected handshake message after connection established"
-                                );
+                            Err(e) => {
+                                trace!(target: "paniq::transport_dump", direction = "rx", peer = %server_addr, len = len, msg_type = 0, hex = %hex::encode(&buf[..len]));
+                                tracing::debug!("Failed to decode frame: {}", e);
+                                continue;
                             }
                         }
                     }
