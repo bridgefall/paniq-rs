@@ -105,24 +105,50 @@ async fn spawn_socks_binary(
     Ok(child)
 }
 
-async fn wait_for_tcp(
-    addr: SocketAddr,
+async fn wait_for_socks_ready(
+    socks_addr: SocketAddr,
+    target_addr: SocketAddr,
     timeout_after: Duration,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let deadline = Instant::now() + timeout_after;
     loop {
-        match tokio::net::TcpStream::connect(addr).await {
-            Ok(stream) => {
-                drop(stream);
+        match tokio::net::TcpStream::connect(socks_addr).await {
+            Ok(mut stream) => {
+                stream.set_nodelay(true)?;
+
+                // Minimal no-auth handshake.
+                stream.write_all(&[0x05, 0x01, 0x00]).await?;
+                let mut resp = [0u8; 2];
+                stream.read_exact(&mut resp).await?;
+                if resp != [0x05, 0x00] {
+                    return Err("unexpected method selection".into());
+                }
+
+                // CONNECT request to a real target so the proxy request is valid.
+                let mut request = vec![0x05, 0x01, 0x00];
+                match target_addr.ip() {
+                    std::net::IpAddr::V4(ipv4) => {
+                        request.push(0x01);
+                        request.extend_from_slice(&ipv4.octets());
+                    }
+                    std::net::IpAddr::V6(ipv6) => {
+                        request.push(0x04);
+                        request.extend_from_slice(&ipv6.octets());
+                    }
+                }
+                request.extend_from_slice(&target_addr.port().to_be_bytes());
+                stream.write_all(&request).await?;
+
+                read_socks5_reply(&mut stream).await?;
                 return Ok(());
             }
             Err(err) => {
                 if Instant::now() >= deadline {
                     return Err(err.into());
                 }
-                tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -236,7 +262,7 @@ async fn test_real_binaries_curl() {
         .expect("spawn socks5d");
 
     let socks_addr: SocketAddr = format!("127.0.0.1:{}", socks_port).parse().unwrap();
-    let readiness = wait_for_tcp(socks_addr, Duration::from_secs(5)).await;
+    let readiness = wait_for_socks_ready(socks_addr, http_addr, Duration::from_secs(5)).await;
 
     let test_result = match readiness {
         Ok(()) => run_socks5_request(socks_addr, "localhost", http_addr.port()).await,
