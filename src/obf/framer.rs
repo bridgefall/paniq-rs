@@ -33,6 +33,8 @@ pub enum MessageType {
     Transport = 4,
 }
 
+pub const FRAME_HEADER_LEN: usize = 4;
+
 pub struct Framer {
     cfg: Config,
     headers: HeaderSet,
@@ -78,7 +80,8 @@ impl Framer {
         if padding < 0 {
             return Err(FramerError::InvalidPadding);
         }
-        let mut datagram = Vec::with_capacity((padding as usize) + 4 + payload.len());
+        let mut datagram =
+            Vec::with_capacity((padding as usize) + FRAME_HEADER_LEN + payload.len());
         if padding > 0 {
             let mut buf = vec![0u8; padding as usize];
             self.rng.fill_bytes(&mut buf);
@@ -90,7 +93,7 @@ impl Framer {
     }
 
     pub fn decode_frame(&self, datagram: &[u8]) -> Result<(MessageType, Vec<u8>), FramerError> {
-        if datagram.len() < 4 {
+        if datagram.len() < FRAME_HEADER_LEN {
             return Err(FramerError::FrameTooShort);
         }
 
@@ -98,12 +101,15 @@ impl Framer {
         let transport_padding = self.padding_for(MessageType::Transport);
         if transport_padding >= 0 {
             let pad_len = transport_padding as usize;
-            if datagram.len() >= pad_len + 4 {
+            if datagram.len() >= pad_len + FRAME_HEADER_LEN {
                 let type_val =
-                    u32::from_le_bytes(datagram[pad_len..pad_len + 4].try_into().unwrap());
+                    u32::from_le_bytes(datagram[pad_len..pad_len + FRAME_HEADER_LEN].try_into().unwrap());
                 if let Some(h) = self.header_for(MessageType::Transport) {
                     if h.validate(type_val) {
-                        return Ok((MessageType::Transport, datagram[pad_len + 4..].to_vec()));
+                        return Ok((
+                            MessageType::Transport,
+                            datagram[pad_len + FRAME_HEADER_LEN..].to_vec(),
+                        ));
                     }
                 }
             }
@@ -124,12 +130,13 @@ impl Framer {
                 None => continue,
             };
             let pad_len = padding as usize;
-            if datagram.len() < pad_len + 4 {
+            if datagram.len() < pad_len + FRAME_HEADER_LEN {
                 continue;
             }
-            let type_val = u32::from_le_bytes(datagram[pad_len..pad_len + 4].try_into().unwrap());
+            let type_val =
+                u32::from_le_bytes(datagram[pad_len..pad_len + FRAME_HEADER_LEN].try_into().unwrap());
             if header.validate(type_val) {
-                return Ok((msg_type, datagram[pad_len + 4..].to_vec()));
+                return Ok((msg_type, datagram[pad_len + FRAME_HEADER_LEN..].to_vec()));
             }
         }
 

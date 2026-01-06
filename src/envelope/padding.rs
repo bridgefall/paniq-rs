@@ -11,6 +11,24 @@ pub struct PaddingPolicy {
 }
 
 impl PaddingPolicy {
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            min: 0,
+            max: 0,
+            burst_min: 0,
+            burst_max: 0,
+            burst_prob: 0.0,
+        }
+    }
+
+    pub fn max_padding(&self) -> usize {
+        if !self.enabled {
+            return 0;
+        }
+        self.max.max(self.burst_max)
+    }
+
     pub fn padding_len<R: Rng>(
         &self,
         payload_len: usize,

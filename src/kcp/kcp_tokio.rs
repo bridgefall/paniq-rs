@@ -160,18 +160,27 @@ impl KcpTelemetry {
     }
 }
 
-fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay: bool) -> u32 {
+fn compute_kcp_mtu(
+    max_packet_size: usize,
+    max_payload: usize,
+    transport_replay: bool,
+    padding_reserve: usize,
+) -> u32 {
     let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
     let payload_budget = max_payload.min(max_packet_size);
-    payload_budget.saturating_sub(overhead).max(1) as u32
+    payload_budget
+        .saturating_sub(overhead)
+        .saturating_sub(padding_reserve)
+        .max(1) as u32
 }
 
 fn compute_kcp_coalesce_limit(
     max_packet_size: usize,
     max_payload: usize,
     transport_replay: bool,
+    padding_reserve: usize,
 ) -> usize {
-    let mtu = compute_kcp_mtu(max_packet_size, max_payload, transport_replay);
+    let mtu = compute_kcp_mtu(max_packet_size, max_payload, transport_replay, padding_reserve);
     let mss = mtu.saturating_sub(kcp_constants::IKCP_OVERHEAD) as usize;
     mss.max(1)
 }
@@ -245,8 +254,9 @@ fn resolve_kcp_windows(
     rtt_ms: Option<u64>,
     max_snd_queue: Option<u32>,
     transport_replay: bool,
+    padding_reserve: usize,
 ) -> (u32, u32, u32) {
-    let mtu = compute_kcp_mtu(max_packet_size, max_payload, transport_replay);
+    let mtu = compute_kcp_mtu(max_packet_size, max_payload, transport_replay, padding_reserve);
     let bdp_window = match (target_bps, rtt_ms) {
         (Some(bps), Some(rtt)) => compute_bdp_window(mtu, bps, rtt),
         _ => None,
@@ -406,14 +416,7 @@ impl Default for ServerConfig {
             rtt_ms: None,
             max_snd_queue: None,
             transport_replay: false,
-            padding_policy: PaddingPolicy {
-                enabled: false,
-                min: 0,
-                max: 0,
-                burst_min: 0,
-                burst_max: 0,
-                burst_prob: 0.0,
-            },
+            padding_policy: PaddingPolicy::disabled(),
             idle_timeout: Duration::from_secs(120),
             handshake_timeout: Duration::from_secs(5),
             handshake_attempts: 3,
@@ -550,10 +553,12 @@ impl KcpServer {
         );
 
         // Create KCP configuration matching kcp-rs settings
+        let padding_reserve = self.config.padding_policy.max_padding();
         let mtu = compute_kcp_mtu(
             self.config.max_packet_size,
             self.config.max_payload,
             self.config.transport_replay,
+            padding_reserve,
         );
         let (snd_wnd, rcv_wnd, max_snd_queue) = resolve_kcp_windows(
             self.config.max_packet_size,
@@ -564,6 +569,7 @@ impl KcpServer {
             self.config.rtt_ms,
             self.config.max_snd_queue,
             self.config.transport_replay,
+            padding_reserve,
         );
 
         let kcp_config = KcpConfig::new()
@@ -747,10 +753,12 @@ async fn run_kcp_engine_server(
     let conv = ConvId::from(conv_id);
     let update_ms = std::cmp::max(1, kcp_config.nodelay.interval);
     let mut engine = KcpEngine::new(conv, kcp_config);
+    let padding_reserve = config.padding_policy.max_padding();
     let coalesce_limit = compute_kcp_coalesce_limit(
         config.max_packet_size,
         config.max_payload,
         config.transport_replay,
+        padding_reserve,
     );
 
     // Set output function for sending KCP packets via UDP with envelope framing
@@ -992,14 +1000,7 @@ impl Default for ClientConfig {
             rtt_ms: None,
             max_snd_queue: None,
             transport_replay: false,
-            padding_policy: PaddingPolicy {
-                enabled: false,
-                min: 0,
-                max: 0,
-                burst_min: 0,
-                burst_max: 0,
-                burst_prob: 0.0,
-            },
+            padding_policy: PaddingPolicy::disabled(),
             handshake_timeout: Duration::from_secs(5),
             handshake_attempts: 3,
             preamble_delay: Duration::from_millis(5),
@@ -1058,10 +1059,12 @@ impl KcpClient {
     /// Complete session setup after handshake (KCP, smux, etc.).
     async fn complete_session_setup(&self, conv_id: u32) -> Result<(), Box<dyn std::error::Error>> {
         // Create KCP configuration matching kcp-rs settings
+        let padding_reserve = self.config.padding_policy.max_padding();
         let mtu = compute_kcp_mtu(
             self.config.max_packet_size,
             self.config.max_payload,
             self.config.transport_replay,
+            padding_reserve,
         );
         let (snd_wnd, rcv_wnd, max_snd_queue) = resolve_kcp_windows(
             self.config.max_packet_size,
@@ -1072,6 +1075,7 @@ impl KcpClient {
             self.config.rtt_ms,
             self.config.max_snd_queue,
             self.config.transport_replay,
+            padding_reserve,
         );
 
         let kcp_config = KcpConfig::new()
@@ -1255,7 +1259,7 @@ mod tests {
         let explicit_send = 2000;
 
         let expected_bdp = compute_bdp_window(
-            compute_kcp_mtu(mtu_packet, max_payload, false),
+            compute_kcp_mtu(mtu_packet, max_payload, false, 0),
             target_bps,
             rtt_ms,
         )
@@ -1270,6 +1274,7 @@ mod tests {
             Some(rtt_ms),
             None,
             false,
+            0,
         );
 
         assert_eq!(snd, explicit_send);
@@ -1348,10 +1353,12 @@ async fn run_kcp_engine_client(
     let conv = ConvId::from(conv_id);
     let update_ms = std::cmp::max(1, kcp_config.nodelay.interval);
     let mut engine = KcpEngine::new(conv, kcp_config);
+    let padding_reserve = config.padding_policy.max_padding();
     let coalesce_limit = compute_kcp_coalesce_limit(
         config.max_packet_size,
         config.max_payload,
         config.transport_replay,
+        padding_reserve,
     );
 
     // Set output function for sending KCP packets via UDP with envelope framing

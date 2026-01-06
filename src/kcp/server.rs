@@ -113,6 +113,8 @@ pub struct ServerConfigWrapper {
     pub max_snd_queue: Option<u32>,
     /// Transport replay protection enabled
     pub transport_replay: bool,
+    /// Transport padding policy
+    pub padding_policy: PaddingPolicy,
     /// Idle timeout in seconds
     pub idle_timeout_secs: u64,
     /// Handshake timeout in seconds
@@ -134,6 +136,7 @@ impl Default for ServerConfigWrapper {
             rtt_ms: None,
             max_snd_queue: None,
             transport_replay: false,
+            padding_policy: PaddingPolicy::disabled(),
             idle_timeout_secs: 120,
             handshake_timeout_secs: 5,
             handshake_attempts: 3,
@@ -159,14 +162,7 @@ pub async fn listen(
         rtt_ms: config.rtt_ms,
         max_snd_queue: config.max_snd_queue,
         transport_replay: config.transport_replay,
-        padding_policy: PaddingPolicy {
-            enabled: false,
-            min: 0,
-            max: 0,
-            burst_min: 0,
-            burst_max: 0,
-            burst_prob: 0.0,
-        },
+        padding_policy: config.padding_policy,
         idle_timeout: std::time::Duration::from_secs(config.idle_timeout_secs),
         handshake_timeout: std::time::Duration::from_secs(config.handshake_timeout_secs),
         handshake_attempts: config.handshake_attempts,

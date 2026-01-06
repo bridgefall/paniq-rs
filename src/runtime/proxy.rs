@@ -121,6 +121,7 @@ impl ProxyHandle {
             rtt_ms: config.profile.kcp.as_ref().and_then(|k| k.rtt_ms),
             max_snd_queue: config.profile.kcp.as_ref().and_then(|k| k.max_snd_queue),
             transport_replay: config.profile.obfuscation.transport_replay,
+            padding_policy: config.profile.transport_padding_policy(),
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
             handshake_timeout_secs: DEFAULT_HANDSHAKE_TIMEOUT_SECS,
             handshake_attempts: DEFAULT_HANDSHAKE_ATTEMPTS,

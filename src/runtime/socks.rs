@@ -79,6 +79,7 @@ impl SocksHandle {
             rtt_ms: config.profile.kcp.as_ref().and_then(|k| k.rtt_ms),
             max_snd_queue: config.profile.kcp.as_ref().and_then(|k| k.max_snd_queue),
             transport_replay: config.profile.obfuscation.transport_replay,
+            padding_policy: config.profile.transport_padding_policy(),
             handshake_timeout_secs: 5,
             handshake_attempts: 3,
             preamble_delay_ms: 5,

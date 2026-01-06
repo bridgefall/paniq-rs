@@ -4,8 +4,12 @@ use crate::envelope::padding::PaddingPolicy;
 use crate::envelope::EnvelopeError;
 use crate::telemetry;
 
-const COUNTER_SIZE: usize = 8;
-const LEN_SIZE: usize = 2;
+pub const COUNTER_SIZE: usize = 8;
+pub const LEN_SIZE: usize = 2;
+
+pub fn transport_overhead(expect_counter: bool) -> usize {
+    LEN_SIZE + if expect_counter { COUNTER_SIZE } else { 0 }
+}
 
 pub fn build_transport_payload<R: RngCore>(
     payload: &[u8],
@@ -19,8 +23,7 @@ pub fn build_transport_payload<R: RngCore>(
         return Err(EnvelopeError::PayloadTooLarge);
     }
     let pad_len = padding.padding_len(payload.len(), max_payload, rng);
-    if payload.len() + pad_len + LEN_SIZE + counter.map(|_| COUNTER_SIZE).unwrap_or(0) > max_payload
-    {
+    if payload.len() + pad_len + LEN_SIZE + counter.map(|_| COUNTER_SIZE).unwrap_or(0) > max_payload {
         telemetry::record_transport_payload_too_large();
         return Err(EnvelopeError::PayloadTooLarge);
     }

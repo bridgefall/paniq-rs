@@ -45,6 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         rtt_ms: kcp_profile.rtt_ms,
         max_snd_queue: kcp_profile.max_snd_queue,
         transport_replay: profile.obfuscation.transport_replay,
+        padding_policy: profile.transport_padding_policy(),
         handshake_timeout_secs: profile.handshake_timeout_or_default().as_secs(),
         handshake_attempts: profile.handshake_attempts,
         preamble_delay_ms: profile.preamble_delay_ms_or_default(),

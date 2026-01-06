@@ -103,6 +103,8 @@ pub struct ClientConfigWrapper {
     pub max_snd_queue: Option<u32>,
     /// Transport replay protection enabled
     pub transport_replay: bool,
+    /// Transport padding policy
+    pub padding_policy: PaddingPolicy,
     /// Handshake timeout in seconds
     pub handshake_timeout_secs: u64,
     /// Maximum handshake attempts
@@ -122,6 +124,7 @@ impl Default for ClientConfigWrapper {
             rtt_ms: None,
             max_snd_queue: None,
             transport_replay: false,
+            padding_policy: PaddingPolicy::disabled(),
             handshake_timeout_secs: 5,
             handshake_attempts: 3,
             preamble_delay_ms: 5,
@@ -148,14 +151,7 @@ pub async fn connect(
         rtt_ms: config.rtt_ms,
         max_snd_queue: config.max_snd_queue,
         transport_replay: config.transport_replay,
-        padding_policy: PaddingPolicy {
-            enabled: false,
-            min: 0,
-            max: 0,
-            burst_min: 0,
-            burst_max: 0,
-            burst_prob: 0.0,
-        },
+        padding_policy: config.padding_policy,
         handshake_timeout: std::time::Duration::from_secs(config.handshake_timeout_secs),
         handshake_attempts: config.handshake_attempts,
         preamble_delay: std::time::Duration::from_millis(config.preamble_delay_ms),

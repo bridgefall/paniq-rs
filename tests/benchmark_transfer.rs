@@ -39,21 +39,7 @@ fn load_benchmark_profile() -> Result<Profile, Box<dyn std::error::Error + Send 
         path.to_string_lossy().to_string()
     });
 
-    let mut profile = Profile::test_profile();
-    let file_profile = Profile::from_file(&profile_path)?;
-
-    profile.kcp = file_profile.kcp;
-    profile.handshake_timeout = file_profile.handshake_timeout;
-    profile.handshake_attempts = file_profile.handshake_attempts;
-    profile.preamble_delay_ms = file_profile.preamble_delay_ms;
-    profile.preamble_jitter_ms = file_profile.preamble_jitter_ms;
-
-    if let Some(kcp) = profile.kcp.as_mut() {
-        // For throughput benchmarking, use the full packet size as payload to reduce fragmentation.
-        kcp.max_payload = kcp.max_packet_size;
-    }
-
-    Ok(profile)
+    Ok(Profile::from_file(profile_path)?)
 }
 
 /// Generate test data - patterned bytes to avoid compression artifacts

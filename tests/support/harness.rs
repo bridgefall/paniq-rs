@@ -20,6 +20,17 @@ pub struct StackHarness {
 }
 
 impl StackHarness {
+    fn load_profile() -> Result<Profile, Box<dyn std::error::Error + Send + Sync>> {
+        let profile_path = std::env::var("PANIQ_TEST_PROFILE").unwrap_or_else(|_| {
+            let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            path.push("examples");
+            path.push("profile.json");
+            path.to_string_lossy().to_string()
+        });
+
+        Ok(Profile::from_file(profile_path)?)
+    }
+
     /// Spawn a new full stack with test defaults.
     ///
     /// # Arguments
@@ -34,19 +45,8 @@ impl StackHarness {
         proxy_listen_addr: SocketAddr,
         socks_listen_addr: SocketAddr,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        // Create proxy server config
-        let proxy_config = ProxyConfig::new_test(proxy_listen_addr);
-
-        // Spawn proxy server
-        let proxy = ProxyHandle::spawn(proxy_config).await?;
-
-        // Create SOCKS5 config that points to our proxy
-        let socks_config = SocksConfig::new_test(socks_listen_addr, proxy.addr);
-
-        // Spawn SOCKS5 server
-        let socks = SocksHandle::spawn(socks_config).await?;
-
-        Ok(Self { proxy, socks })
+        let profile = Self::load_profile()?;
+        Self::spawn_with_profile(proxy_listen_addr, socks_listen_addr, profile).await
     }
 
     /// Spawn a new full stack using a provided profile.

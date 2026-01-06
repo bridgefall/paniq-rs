@@ -37,6 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         rtt_ms: None,
         max_snd_queue: None,
         transport_replay: profile.obfuscation.transport_replay,
+        padding_policy: profile.transport_padding_policy(),
         idle_timeout_secs: 120,
         handshake_timeout_secs: 5,
         handshake_attempts: 3,

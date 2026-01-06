@@ -22,7 +22,7 @@ pub use chain::{
     ChainSet, ChainSetError,
 };
 pub use config::{Config, ConfigError};
-pub use framer::{Framer, MessageType};
+pub use framer::{Framer, MessageType, FRAME_HEADER_LEN};
 pub use header::{parse_header, parse_header_with_rng, MagicHeader};
 pub use headers::{
     default_header_specs, parse_headers, parse_headers_with_defaults,

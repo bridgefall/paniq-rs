@@ -4,7 +4,8 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::obf::Config as ObfConfig;
+use crate::envelope::padding::PaddingPolicy;
+use crate::obf::{Config as ObfConfig, FRAME_HEADER_LEN};
 
 /// Profile configuration containing proxy address, KCP settings, and obfuscation
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -308,6 +309,11 @@ impl ObfuscationConfig {
             i5: self.i5.clone(),
         }
     }
+
+    pub fn transport_overhead_bytes(&self) -> usize {
+        let transport_padding = self.s4.max(0) as usize;
+        transport_padding.saturating_add(FRAME_HEADER_LEN)
+    }
 }
 
 impl Profile {
@@ -335,6 +341,20 @@ impl Profile {
         self.obfuscation.to_obf_config()
     }
 
+    pub fn transport_padding_policy(&self) -> PaddingPolicy {
+        match &self.transport_padding {
+            Some(p) => PaddingPolicy {
+                enabled: true,
+                min: p.pad_min,
+                max: p.pad_max,
+                burst_min: p.pad_burst_min,
+                burst_max: p.pad_burst_max,
+                burst_prob: p.pad_burst_prob,
+            },
+            None => PaddingPolicy::disabled(),
+        }
+    }
+
     pub fn handshake_timeout_or_default(&self) -> Duration {
         self.handshake_timeout
             .unwrap_or_else(default_handshake_timeout)
@@ -353,10 +373,17 @@ impl Profile {
     }
 
     pub fn effective_kcp_max_payload(&self) -> usize {
-        self.kcp
+        let max_payload = self
+            .kcp
             .as_ref()
             .map(|k| k.effective_max_payload())
-            .unwrap_or_else(|| KcpConfig::default().effective_max_payload())
+            .unwrap_or_else(|| KcpConfig::default().effective_max_payload());
+
+        let max_packet_size = self.effective_kcp_max_packet_size();
+        let obf_overhead = self.obfuscation.transport_overhead_bytes();
+        let transport_budget = max_packet_size.saturating_sub(obf_overhead);
+
+        max_payload.min(transport_budget)
     }
 
     /// Create a test profile with minimal configuration for integration testing.
