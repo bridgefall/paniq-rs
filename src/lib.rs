@@ -1,11 +1,12 @@
+#[cfg(feature = "kcp")]
 pub mod client;
 pub mod envelope;
+#[cfg(feature = "kcp")]
 pub mod io;
 pub mod obf;
 pub mod profile;
 pub mod proxy_protocol;
 
-#[cfg(feature = "kcp")]
 mod telemetry;
 
 #[cfg(feature = "kcp")]
