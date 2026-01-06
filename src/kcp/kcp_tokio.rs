@@ -282,6 +282,21 @@ fn should_accept_send(stats: &KcpStats, max_snd_queue: u32) -> bool {
     stats.snd_queue_size < max_snd_queue
 }
 
+fn is_fatal_kcp_error(err: &kcp_tokio::KcpError) -> bool {
+    use kcp_tokio::error::ConnectionError;
+    matches!(
+        err,
+        kcp_tokio::KcpError::Connection {
+            kind: ConnectionError::Closed
+                | ConnectionError::Reset
+                | ConnectionError::Refused
+                | ConnectionError::Lost
+                | ConnectionError::Timeout
+                | ConnectionError::NotConnected
+        }
+    )
+}
+
 fn start_transport_logger() {
     if !telemetry::enabled() {
         return;
@@ -728,7 +743,11 @@ impl KcpServer {
         // Remove stale sessions
         for key in stale_keys {
             info!("Removing stale session: {:?}", key);
-            sessions.remove(&key);
+            if let Some(mut session) = sessions.remove(&key) {
+                if let Some(handle) = session.udp_send_handle.take() {
+                    handle.abort();
+                }
+            }
         }
     }
 }
@@ -839,8 +858,14 @@ async fn run_kcp_engine_server(
                 }
                 if let Err(e) = engine.input(data).await {
                     warn!("KCP engine input error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 } else if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 }
             }
 
@@ -852,8 +877,14 @@ async fn run_kcp_engine_server(
                 }
                 if let Err(e) = engine.send(batch).await {
                     warn!("KCP engine send error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 } else if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 }
             }
 
@@ -861,6 +892,9 @@ async fn run_kcp_engine_server(
             _ = update_interval.tick() => {
                 if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 }
             }
 
@@ -881,8 +915,14 @@ async fn run_kcp_engine_server(
                 }
                 if let Err(e) = engine.send(batch).await {
                     warn!("KCP engine send error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 } else if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 }
             }
         }
@@ -1456,8 +1496,14 @@ async fn run_kcp_engine_client(
                 }
                 if let Err(e) = engine.input(data).await {
                     warn!("KCP engine input error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 } else if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 }
             }
 
@@ -1469,8 +1515,14 @@ async fn run_kcp_engine_client(
                 }
                 if let Err(e) = engine.send(batch).await {
                     warn!("KCP engine send error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 } else if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 }
             }
 
@@ -1478,6 +1530,9 @@ async fn run_kcp_engine_client(
             _ = update_interval.tick() => {
                 if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 }
             }
 
@@ -1498,8 +1553,14 @@ async fn run_kcp_engine_client(
                 }
                 if let Err(e) = engine.send(batch).await {
                     warn!("KCP engine send error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 } else if let Err(e) = engine.update().await {
                     warn!("KCP engine update error: {:?}", e);
+                    if is_fatal_kcp_error(&e) {
+                        break;
+                    }
                 }
             }
         }
