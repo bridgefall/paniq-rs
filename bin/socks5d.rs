@@ -25,7 +25,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = parse_args()?;
     let profile = Profile::from_file(&args.profile)?;
     let obf_config = profile.obf_config();
-    let framer = Framer::new(obf_config.clone()).expect("framer");
 
     let server_addr = args
         .proxy_addr_override
@@ -51,17 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         preamble_delay_ms: profile.preamble_delay_ms_or_default(),
     };
 
-    let (_ep, conn) = connect(
-        std::net::UdpSocket::bind("0.0.0.0:0")?,
-        server_addr,
-        framer,
-        config,
-        &[],
-        "paniq",
-    )
-    .await?;
-
-    let connector = KcpConnector { conn };
+    let connector = KcpConnector::new(server_addr, obf_config, config);
 
     let auth = args
         .auth
@@ -123,7 +112,90 @@ fn parse_args() -> Result<Args, pico_args::Error> {
 }
 
 struct KcpConnector {
-    conn: paniq::kcp::client::Connection,
+    server_addr: std::net::SocketAddr,
+    obf_config: paniq::obf::Config,
+    client_config: ClientConfigWrapper,
+    conn: tokio::sync::Mutex<Option<paniq::kcp::client::Connection>>,
+}
+
+impl KcpConnector {
+    fn new(
+        server_addr: std::net::SocketAddr,
+        obf_config: paniq::obf::Config,
+        client_config: ClientConfigWrapper,
+    ) -> Self {
+        Self {
+            server_addr,
+            obf_config,
+            client_config,
+            conn: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn connect_session(
+        &self,
+    ) -> Result<paniq::kcp::client::Connection, SocksError> {
+        let framer = Framer::new(self.obf_config.clone())
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        let (_ep, conn) = connect(
+            std::net::UdpSocket::bind("0.0.0.0:0")
+                .map_err(|e| SocksError::Connector(e.to_string()))?,
+            self.server_addr,
+            framer,
+            self.client_config.clone(),
+            &[],
+            "paniq",
+        )
+        .await
+        .map_err(|e| SocksError::Connector(e.to_string()))?;
+        Ok(conn)
+    }
+
+    async fn get_connection(&self) -> Result<paniq::kcp::client::Connection, SocksError> {
+        let mut guard = self.conn.lock().await;
+        if let Some(conn) = guard.as_ref() {
+            return Ok(conn.clone());
+        }
+        let conn = self.connect_session().await?;
+        *guard = Some(conn.clone());
+        Ok(conn)
+    }
+
+    async fn reset_connection(&self) {
+        let mut guard = self.conn.lock().await;
+        if let Some(conn) = guard.take() {
+            conn.shutdown().await;
+        }
+    }
+
+    async fn open_stream_with_retry(
+        &self,
+        buf: &[u8],
+    ) -> Result<(paniq::kcp::client::SendStream, paniq::kcp::client::RecvStream), SocksError>
+    {
+        let conn = self.get_connection().await?;
+        if let Ok(stream) = Self::open_stream(&conn, buf).await {
+            return Ok(stream);
+        }
+        self.reset_connection().await;
+        let conn = self.get_connection().await?;
+        Self::open_stream(&conn, buf).await
+    }
+
+    async fn open_stream(
+        conn: &paniq::kcp::client::Connection,
+        buf: &[u8],
+    ) -> Result<(paniq::kcp::client::SendStream, paniq::kcp::client::RecvStream), SocksError>
+    {
+        let (mut send, recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        send.write_all(buf)
+            .await
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        Ok((send, recv))
+    }
 }
 
 #[async_trait::async_trait]
@@ -157,14 +229,7 @@ impl RelayConnector for KcpConnector {
 
         buf.extend_from_slice(&port.to_be_bytes());
 
-        let (mut send, recv) = self
-            .conn
-            .open_bi()
-            .await
-            .map_err(|e| SocksError::Connector(e.to_string()))?;
-        send.write_all(&buf)
-            .await
-            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        let (send, recv) = self.open_stream_with_retry(&buf).await?;
         Ok(Box::new(StreamWrapper {
             send: Some(send),
             recv,

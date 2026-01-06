@@ -958,6 +958,8 @@ pub struct KcpClient {
     pub connector: Arc<Mutex<Option<async_smux::MuxConnector<KcpStreamAdapter>>>>,
     /// Smux acceptor for receiving streams (server-initiated)
     pub acceptor: Arc<Mutex<Option<async_smux::MuxAcceptor<KcpStreamAdapter>>>>,
+    /// UDP receive loop handle (for cleanup)
+    udp_recv_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 /// Client configuration.
@@ -1045,13 +1047,14 @@ impl KcpClient {
             config,
             connector: Arc::new(Mutex::new(None)),
             acceptor: Arc::new(Mutex::new(None)),
+            udp_recv_handle: Arc::new(Mutex::new(None)),
         };
 
         // Complete session setup (KCP, smux, etc.)
         client.complete_session_setup(conv_id).await?;
 
         // Start UDP receive loop
-        client.start_udp_receive_loop();
+        client.start_udp_receive_loop().await;
 
         Ok(client)
     }
@@ -1156,14 +1159,14 @@ impl KcpClient {
     }
 
     /// Start the UDP receive loop.
-    fn start_udp_receive_loop(&self) {
+    async fn start_udp_receive_loop(&self) {
         start_transport_logger();
         let socket = self.socket.clone();
         let framer = self.framer.clone();
         let session = self.session.clone();
         let transport_replay = self.config.transport_replay;
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut buf = vec![0u8; 65536];
             loop {
                 match socket.recv(&mut buf).await {
@@ -1218,6 +1221,20 @@ impl KcpClient {
                 }
             }
         });
+        *self.udp_recv_handle.lock().await = Some(handle);
+    }
+
+    pub async fn shutdown(&self) {
+        if let Some(handle) = self.udp_recv_handle.lock().await.take() {
+            handle.abort();
+        }
+        if let Some(session) = self.session.lock().await.take() {
+            if let Some(handle) = session.udp_send_handle {
+                handle.abort();
+            }
+        }
+        *self.connector.lock().await = None;
+        *self.acceptor.lock().await = None;
     }
 
     /// Open a new multiplexed stream.

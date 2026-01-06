@@ -34,6 +34,7 @@ pub type RecvStream = tokio::io::ReadHalf<async_smux::MuxStream<KcpStreamAdapter
 pub type MuxStream = async_smux::MuxStream<KcpStreamAdapter>;
 
 /// Represents a KCP connection.
+#[derive(Clone)]
 pub struct Connection {
     /// The underlying KCP client
     client: Arc<KcpClient>,
@@ -76,6 +77,10 @@ impl Connection {
         // TODO: Implement proper close via async_smux
     }
 
+    pub async fn shutdown(&self) {
+        self.client.shutdown().await;
+    }
+
     /// Get the endpoint.
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
@@ -83,9 +88,11 @@ impl Connection {
 }
 
 /// Client endpoint placeholder.
+#[derive(Clone)]
 pub struct Endpoint;
 
 /// Client configuration.
+#[derive(Clone)]
 pub struct ClientConfigWrapper {
     /// Maximum packet size for transport payloads
     pub max_packet_size: usize,

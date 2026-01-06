@@ -66,7 +66,6 @@ impl SocksHandle {
     /// A `SocksHandle` that can be used to manage the server's lifecycle.
     pub async fn spawn(config: SocksConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let obf_config = config.profile.obf_config();
-        let framer = Framer::new(obf_config)?;
         let server_addr = config.profile.proxy_addr.parse()?;
 
         // Map profile config to client config
@@ -85,18 +84,7 @@ impl SocksHandle {
             preamble_delay_ms: 5,
         };
         let relay_buffer_size = client_config.max_payload;
-
-        let (_ep, conn) = connect(
-            std::net::UdpSocket::bind("0.0.0.0:0")?,
-            server_addr,
-            framer,
-            client_config,
-            &[],
-            "paniq",
-        )
-        .await?;
-
-        let connector = KcpConnector { conn };
+        let connector = KcpConnector::new(server_addr, obf_config, client_config);
 
         let auth = config
             .auth
@@ -185,7 +173,88 @@ impl Drop for SocksHandle {
 ///
 /// This uses the production code path from `bin/socks5d.rs`.
 struct KcpConnector {
-    conn: crate::kcp::client::Connection,
+    server_addr: SocketAddr,
+    obf_config: crate::obf::Config,
+    client_config: ClientConfigWrapper,
+    conn: tokio::sync::Mutex<Option<crate::kcp::client::Connection>>,
+}
+
+impl KcpConnector {
+    fn new(
+        server_addr: SocketAddr,
+        obf_config: crate::obf::Config,
+        client_config: ClientConfigWrapper,
+    ) -> Self {
+        Self {
+            server_addr,
+            obf_config,
+            client_config,
+            conn: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn connect_session(
+        &self,
+    ) -> Result<crate::kcp::client::Connection, SocksError> {
+        let framer = Framer::new(self.obf_config.clone())
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        let (_ep, conn) = connect(
+            std::net::UdpSocket::bind("0.0.0.0:0")
+                .map_err(|e| SocksError::Connector(e.to_string()))?,
+            self.server_addr,
+            framer,
+            self.client_config.clone(),
+            &[],
+            "paniq",
+        )
+        .await
+        .map_err(|e| SocksError::Connector(e.to_string()))?;
+        Ok(conn)
+    }
+
+    async fn get_connection(&self) -> Result<crate::kcp::client::Connection, SocksError> {
+        let mut guard = self.conn.lock().await;
+        if let Some(conn) = guard.as_ref() {
+            return Ok(conn.clone());
+        }
+        let conn = self.connect_session().await?;
+        *guard = Some(conn.clone());
+        Ok(conn)
+    }
+
+    async fn reset_connection(&self) {
+        let mut guard = self.conn.lock().await;
+        if let Some(conn) = guard.take() {
+            conn.shutdown().await;
+        }
+    }
+
+    async fn open_stream_with_retry(
+        &self,
+        buf: &[u8],
+    ) -> Result<(crate::kcp::client::SendStream, crate::kcp::client::RecvStream), SocksError> {
+        let conn = self.get_connection().await?;
+        if let Ok(stream) = Self::open_stream(&conn, buf).await {
+            return Ok(stream);
+        }
+        self.reset_connection().await;
+        let conn = self.get_connection().await?;
+        Self::open_stream(&conn, buf).await
+    }
+
+    async fn open_stream(
+        conn: &crate::kcp::client::Connection,
+        buf: &[u8],
+    ) -> Result<(crate::kcp::client::SendStream, crate::kcp::client::RecvStream), SocksError> {
+        let (mut send, recv) = conn
+            .open_bi()
+            .await
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        send.write_all(buf)
+            .await
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        Ok((send, recv))
+    }
 }
 
 #[async_trait::async_trait]
@@ -218,14 +287,7 @@ impl RelayConnector for KcpConnector {
 
         buf.extend_from_slice(&port.to_be_bytes());
 
-        let (mut send, recv) = self
-            .conn
-            .open_bi()
-            .await
-            .map_err(|e| SocksError::Connector(e.to_string()))?;
-        send.write_all(&buf)
-            .await
-            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        let (send, recv) = self.open_stream_with_retry(&buf).await?;
         Ok(Box::new(StreamWrapper {
             send: Some(send),
             recv,
