@@ -2,7 +2,13 @@
 
 `paniq-rs` is the high-performance Rust implementation of the **Paniq** transport protocol, a core component of the **Bridgefall** censorship-resilient connectivity substrate. It provides a robust, obfuscated, and adaptable networking layer designed to survive in high-censorship environments by mimicking innocuous UDP traffic.
 
-## Overview
+## Project Overview
+
+`paniq-rs` is a dual-purpose project:
+1.  **A Standalone Application Suite**: Ready-to-use binaries (`socks5d`, `proxy-server`) for secure SOCKS5 tunneling.
+2.  **A Transport SDK**: A flexible Rust library allowing developers to embed the Paniq transport protocol directly into their own applications, bypassing SOCKS5.
+
+## Protocol Design
 
 Unlike standard VPN protocols, Paniq is designed from the ground up to evade Deep Packet Inspection (DPI) and protocol fingerprinting. It achieves this through a multi-layered approach:
 1.  **Preamble Noise**: Handshakes are preceded by configurable amounts of cryptographically random junk and custom signatures.
@@ -20,6 +26,7 @@ Unlike standard VPN protocols, Paniq is designed from the ground up to evade Dee
     *   **Encrypted Timestamps**: Prevents replay attacks and active probing during the handshake.
     *   **MAC1 Verification**: Optional pre-handshake authentication to reject unauthorized probes early.
 *   **Components**:
+    *   `paniq`: The core library crate exposing the transport SDK.
     *   `socks5d`: A local SOCKS5 daemon bridging standard application traffic into the Paniq network.
     *   `proxy-server`: A high-throughput entry node that unwraps transport layers and forwards traffic to upstreams.
 
@@ -46,6 +53,8 @@ For more technical details, see the [Protocol Specification](docs/protocol.md).
 The project is organized as a Cargo workspace:
 
 ### Library Modules (`src/`)
+*   **`client`**: The primary SDK entry point (`PaniqClient`) for managing connections and streams.
+*   **`io`**: Async I/O primitives (`PaniqStream`) implementing standard `AsyncRead`/`AsyncWrite`.
 *   **`envelope`**: Logic for preamble sequences and packet framing.
 *   **`obf`**: Core obfuscation layer (crypto, randomized padding, header ranges).
 *   **`kcp`**: Reliable UDP transport session management.
@@ -57,6 +66,38 @@ The project is organized as a Cargo workspace:
 *   **`socks5d`**: The client entry point.
 *   **`proxy-server`**: The server entry point.
 *   **`gen_test_cert`**: Utility for generating credentials and test profiles.
+
+## SDK Usage
+
+Developers can use `paniq-rs` to build custom applications that benefit from its obfuscation and reliability features without running a separate proxy daemon.
+
+Add to `Cargo.toml`:
+```toml
+[dependencies]
+paniq = { path = ".", features = ["kcp"] }
+```
+
+### Example: Simple Client
+
+```rust
+use paniq::client::PaniqClient;
+
+// Configure and connect
+let client = PaniqClient::new(server_addr, obf_config, client_config);
+
+// Open a reliable, obfuscated stream
+let mut stream = client.open_stream().await?;
+stream.write_all(b"Hello").await?;
+```
+
+For a complete working example of a custom client and server, see [`examples/echo.rs`](examples/echo.rs).
+
+## Feature Flags
+
+The crate exposes the following features to minimize compile-time deps:
+
+*   **`kcp`**: Enables the core `PaniqClient`, `PaniqStream`, and KCP transport logic. Required for SDK usage.
+*   **`socks5`**: Enables the SOCKS5 protocol handling logic. Required for `socks5d`.
 
 ## Getting Started
 

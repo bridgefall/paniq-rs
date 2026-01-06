@@ -20,7 +20,6 @@ TEST_ROUNDTRIP := kcp_round_trip_over_obfuscating_socket
 TEST_INTEGRATION_KCP := integration_socks5_kcp
 TEST_INTEGRATION_REALISTIC := integration_socks5_realistic
 TEST_GOLDEN := golden_vectors
-TEST_PARITY := go_parity
 
 # Directories
 TARGET_DEBUG := target/debug
@@ -115,11 +114,6 @@ test-socks5-realistic:
 test-golden:
 	@echo "$(COLOR_BLUE)Running golden vectors test...$(COLOR_RESET)"
 	$(CARGO) test --test $(TEST_GOLDEN)
-
-.PHONY: test-parity
-test-parity:
-	@echo "$(COLOR_BLUE)Running Go parity test...$(COLOR_RESET)"
-	$(CARGO) test --test $(TEST_PARITY) --features "kcp"
 
 # Soak tests (long-running stress tests)
 # Usage: make test-soak SOAK_SECS=60  (default: 30 seconds)
