@@ -59,13 +59,31 @@ The project is organized as a Cargo workspace:
 *   **`obf`**: Core obfuscation layer (crypto, randomized padding, header ranges).
 *   **`kcp`**: Reliable UDP transport session management.
 *   **`socks5`**: Protocol handler for local SOCKS5 proxying.
+*   **`control`**: IPC module for daemon observability (Ping/Stats) via Unix Domain Sockets.
 *   **`profile`**: JSON-based configuration system defining keys, endpoints, and obfuscation parameters.
 *   **`runtime`**: High-level orchestration integrating everything into the Tokio async runtime.
 
 ### Binaries (`bin/`)
 *   **`socks5d`**: The client entry point.
 *   **`proxy-server`**: The server entry point.
+*   **`paniq-ctl`**: CLI utility for monitoring the `socks5d` daemon via its control socket.
 *   **`gen_test_cert`**: Utility for generating credentials and test profiles.
+
+## Control Plane & Observability
+
+`socks5d` supports an optional observability-only control plane via a Unix Domain Socket (UDS). This is used by external managers (e.g., systemd, Android Services, or custom CLI tools) to monitor the daemon's health and fetch real-time metrics without interrupting the transport flow.
+
+- **Enable the Control Socket**: Pass `--control-socket <path>` to `socks5d`.
+- **Query with `paniq-ctl`**:
+  ```bash
+  # Check if daemon is responsive
+  paniq-ctl --socket /tmp/paniq_control.sock ping
+
+  # Fetch real-time connection stats and throughput
+  paniq-ctl --socket /tmp/paniq_control.sock stats
+  ```
+
+The control API uses a simple JSON-based request/response protocol over the UDS, making it easy to integrate with mobile apps or other monitoring agents.
 
 ## SDK Usage
 

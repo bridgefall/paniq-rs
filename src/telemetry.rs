@@ -16,9 +16,10 @@ static TRANSPORT_FRAME_OUT: AtomicU64 = AtomicU64::new(0);
 static TRANSPORT_INVALID_LENGTH: AtomicU64 = AtomicU64::new(0);
 static TRANSPORT_COUNTER_REJECT: AtomicU64 = AtomicU64::new(0);
 static TRANSPORT_PAYLOAD_TOO_LARGE: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_CONNECTIONS: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy, Default)]
-pub(crate) struct TransportSnapshot {
+#[derive(Clone, Copy, Default, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TransportSnapshot {
     pub udp_in_bytes: u64,
     pub udp_out_bytes: u64,
     pub transport_payload_in_bytes: u64,
@@ -30,6 +31,7 @@ pub(crate) struct TransportSnapshot {
     pub transport_invalid_length: u64,
     pub transport_counter_reject: u64,
     pub transport_payload_too_large: u64,
+    pub active_connections: u64,
 }
 
 impl TransportSnapshot {
@@ -64,6 +66,9 @@ impl TransportSnapshot {
             transport_payload_too_large: self
                 .transport_payload_too_large
                 .saturating_sub(prev.transport_payload_too_large),
+            active_connections: self
+                .active_connections
+                .saturating_sub(prev.active_connections),
         }
     }
 }
@@ -134,7 +139,31 @@ pub(crate) fn record_transport_payload_too_large() {
     TRANSPORT_PAYLOAD_TOO_LARGE.fetch_add(1, Ordering::Relaxed);
 }
 
-pub(crate) fn transport_snapshot() -> TransportSnapshot {
+pub fn record_connection_open() {
+    ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_connection_close() {
+    ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
+}
+
+/// RAII guard for tracking an active connection.
+pub struct ConnectionGuard;
+
+impl ConnectionGuard {
+    pub fn new() -> Self {
+        record_connection_open();
+        Self
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        record_connection_close();
+    }
+}
+
+pub fn transport_snapshot() -> TransportSnapshot {
     TransportSnapshot {
         udp_in_bytes: UDP_BYTES_IN.load(Ordering::Relaxed),
         udp_out_bytes: UDP_BYTES_OUT.load(Ordering::Relaxed),
@@ -147,5 +176,6 @@ pub(crate) fn transport_snapshot() -> TransportSnapshot {
         transport_invalid_length: TRANSPORT_INVALID_LENGTH.load(Ordering::Relaxed),
         transport_counter_reject: TRANSPORT_COUNTER_REJECT.load(Ordering::Relaxed),
         transport_payload_too_large: TRANSPORT_PAYLOAD_TOO_LARGE.load(Ordering::Relaxed),
+        active_connections: ACTIVE_CONNECTIONS.load(Ordering::Relaxed),
     }
 }

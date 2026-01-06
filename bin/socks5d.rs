@@ -5,6 +5,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
 use paniq::client::PaniqClient;
+use paniq::control::ControlServer;
 // use paniq::io::PaniqStream; // unused in this module
 use paniq::kcp::client::ClientConfigWrapper;
 use paniq::profile::Profile;
@@ -75,16 +76,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!(listen_addr = %args.listen_addr, "SOCKS5 daemon listening");
     tracing::info!(server_addr = %server_addr, "Proxy server configured (connect on demand)");
 
-    loop {
-        let (stream, addr) = listener.accept().await?;
-        let server = server.clone();
-        tracing::debug!(client_addr = %addr, "Accepted client connection");
+    // Start control server if control socket is provided
+    if let Some(control_socket) = &args.control_socket {
+        let control_server = ControlServer::bind(control_socket)?;
+        tracing::info!(socket = %control_socket.display(), "Control server listening");
         tokio::spawn(async move {
-            if let Err(err) = server.serve_stream(stream).await {
-                tracing::error!(error = %err, client_addr = %addr, "SOCKS5 stream error");
+            if let Err(e) = control_server.run().await {
+                tracing::error!(error = %e, "Control server error");
             }
         });
     }
+
+    // Wait for shutdown signal
+    tokio::select! {
+        _ = async {
+            loop {
+                match listener.accept().await {
+                    Ok((stream, addr)) => {
+                        let server = server.clone();
+                        tracing::debug!(client_addr = %addr, "Accepted client connection");
+                        tokio::spawn(async move {
+                            if let Err(err) = server.serve_stream(stream).await {
+                                tracing::error!(error = %err, client_addr = %addr, "SOCKS5 stream error");
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Listener accept error");
+                        return;
+                    }
+                }
+            }
+        } => {}
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received shutdown signal");
+        }
+    }
+
+    Ok(())
 }
 
 struct Args {
@@ -92,6 +121,7 @@ struct Args {
     profile: PathBuf,
     proxy_addr_override: Option<String>,
     auth: Option<(String, String)>,
+    control_socket: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, pico_args::Error> {
@@ -99,6 +129,7 @@ fn parse_args() -> Result<Args, pico_args::Error> {
     let listen_addr = pargs.value_from_str(["-l", "--listen"])?;
     let profile: PathBuf = pargs.value_from_str(["-p", "--profile"])?;
     let proxy_addr_override = pargs.opt_value_from_str("--proxy-addr")?;
+    let control_socket = pargs.opt_value_from_str("--control-socket")?;
     let auth = if let (Ok(user), Ok(pass)) = (
         pargs.value_from_str(["-u", "--user"]),
         pargs.value_from_str(["-a", "--auth"]),
@@ -112,6 +143,7 @@ fn parse_args() -> Result<Args, pico_args::Error> {
         profile,
         proxy_addr_override,
         auth,
+        control_socket,
     })
 }
 

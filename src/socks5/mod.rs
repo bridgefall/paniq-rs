@@ -105,11 +105,7 @@ impl<C: RelayConnector> Socks5Server<C> {
         Self::new_with_relay_buffer(connector, auth, default_relay_buffer_size())
     }
 
-    pub fn new_with_relay_buffer(
-        connector: C,
-        auth: AuthConfig,
-        relay_buffer_size: usize,
-    ) -> Self {
+    pub fn new_with_relay_buffer(connector: C, auth: AuthConfig, relay_buffer_size: usize) -> Self {
         Self {
             connector: Arc::new(connector),
             auth,
@@ -156,6 +152,7 @@ impl<C: RelayConnector> Socks5Server<C> {
         send_success_reply(&mut socket, &target).await?;
         tracing::info!("Success reply sent, starting relay");
 
+        let _guard = crate::telemetry::ConnectionGuard::new();
         relay_bidirectional(socket, remote, self.relay_buffer_size).await
     }
 }
@@ -281,10 +278,7 @@ where
         loop {
             match client_read.read(&mut buf).await {
                 Ok(0) => {
-                    tracing::debug!(
-                        bytes_out = total,
-                        "client_to_remote: Got EOF from client"
-                    );
+                    tracing::debug!(bytes_out = total, "client_to_remote: Got EOF from client");
                     break;
                 }
                 Ok(n) => {
@@ -330,11 +324,7 @@ where
                     break;
                 }
                 Ok(n) => {
-                    tracing::trace!(
-                        bytes = n,
-                        direction = "remote_to_client",
-                        "Read from KCP"
-                    );
+                    tracing::trace!(bytes = n, direction = "remote_to_client", "Read from KCP");
                     client_write.write_all(&buf[..n]).await?;
                     total += n as u64;
                 }
