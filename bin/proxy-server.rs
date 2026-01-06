@@ -5,6 +5,10 @@ use paniq::kcp::server::listen;
 use paniq::kcp::server::ServerConfigWrapper;
 use paniq::obf::Framer;
 use paniq::profile::Profile;
+use paniq::proxy_protocol::{
+    ADDR_TYPE_DOMAIN, ADDR_TYPE_IPV4, ADDR_TYPE_IPV6, DOMAIN_LEN_SIZE, IPV4_ADDR_SIZE,
+    IPV6_ADDR_SIZE, PORT_SIZE, PROTOCOL_VERSION, REPLY_GENERAL_FAILURE, REPLY_SUCCESS,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::info_span;
 use tracing::Instrument;
@@ -106,7 +110,7 @@ async fn handle_stream(
     recv.read_exact(&mut buf).await?;
     let version = buf[0];
 
-    if version != 0x01 {
+    if version != PROTOCOL_VERSION {
         return Err(format!("Unsupported protocol version: {}", version).into());
     }
 
@@ -116,33 +120,33 @@ async fn handle_stream(
     let addr_type = addr_type_buf[0];
 
     let target = match addr_type {
-        0x01 => {
+        ADDR_TYPE_IPV4 => {
             // IPv4
-            let mut addr_buf = [0u8; 4];
+            let mut addr_buf = [0u8; IPV4_ADDR_SIZE];
             recv.read_exact(&mut addr_buf).await?;
-            let mut port_buf = [0u8; 2];
+            let mut port_buf = [0u8; PORT_SIZE];
             recv.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
             TargetSpec::Addr(SocketAddr::new(std::net::IpAddr::V4(addr_buf.into()), port))
         }
-        0x03 => {
+        ADDR_TYPE_DOMAIN => {
             // Domain
-            let mut len_buf = [0u8; 1];
+            let mut len_buf = [0u8; DOMAIN_LEN_SIZE];
             recv.read_exact(&mut len_buf).await?;
             let len = len_buf[0] as usize;
             let mut domain_buf = vec![0u8; len];
             recv.read_exact(&mut domain_buf).await?;
             let domain = String::from_utf8(domain_buf)?;
-            let mut port_buf = [0u8; 2];
+            let mut port_buf = [0u8; PORT_SIZE];
             recv.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
             TargetSpec::Domain(domain, port)
         }
-        0x04 => {
+        ADDR_TYPE_IPV6 => {
             // IPv6
-            let mut addr_buf = [0u8; 16];
+            let mut addr_buf = [0u8; IPV6_ADDR_SIZE];
             recv.read_exact(&mut addr_buf).await?;
-            let mut port_buf = [0u8; 2];
+            let mut port_buf = [0u8; PORT_SIZE];
             recv.read_exact(&mut port_buf).await?;
             let port = u16::from_be_bytes(port_buf);
             TargetSpec::Addr(SocketAddr::new(std::net::IpAddr::V6(addr_buf.into()), port))
@@ -150,7 +154,16 @@ async fn handle_stream(
         _ => return Err(format!("Unknown address type: {}", addr_type).into()),
     };
 
-    let mut target_stream = connect_target(target).await?;
+    let mut target_stream = match connect_target(target).await {
+        Ok(stream) => {
+            send.write_all(&[REPLY_SUCCESS]).await?;
+            stream
+        }
+        Err(e) => {
+            let _ = send.write_all(&[REPLY_GENERAL_FAILURE]).await;
+            return Err(e);
+        }
+    };
 
     // Manual relay instead of tokio::io::copy to handle half-close properly
     tracing::info!("Starting bidirectional relay");

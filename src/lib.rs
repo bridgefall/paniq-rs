@@ -1,6 +1,7 @@
 pub mod envelope;
 pub mod obf;
 pub mod profile;
+pub mod proxy_protocol;
 
 #[cfg(feature = "kcp")]
 mod telemetry;

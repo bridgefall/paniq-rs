@@ -9,8 +9,11 @@ use std::sync::Arc;
 use crate::kcp::client::{connect, ClientConfigWrapper};
 use crate::obf::Framer;
 use crate::profile::Profile;
+use crate::proxy_protocol::{
+    ADDR_TYPE_DOMAIN, ADDR_TYPE_IPV4, ADDR_TYPE_IPV6, PROTOCOL_VERSION, REPLY_SUCCESS,
+};
 use crate::socks5::{AuthConfig, IoStream, RelayConnector, Socks5Server, SocksError, TargetAddr};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -234,25 +237,39 @@ impl KcpConnector {
         buf: &[u8],
     ) -> Result<(crate::kcp::client::SendStream, crate::kcp::client::RecvStream), SocksError> {
         let conn = self.get_connection().await?;
-        if let Ok(stream) = Self::open_stream(&conn, buf).await {
+        if let Ok(stream) = self.open_stream(&conn, buf).await {
             return Ok(stream);
         }
         self.reset_connection().await;
         let conn = self.get_connection().await?;
-        Self::open_stream(&conn, buf).await
+        self.open_stream(&conn, buf).await
     }
 
     async fn open_stream(
+        &self,
         conn: &crate::kcp::client::Connection,
         buf: &[u8],
     ) -> Result<(crate::kcp::client::SendStream, crate::kcp::client::RecvStream), SocksError> {
-        let (mut send, recv) = conn
+        let (mut send, mut recv) = conn
             .open_bi()
             .await
             .map_err(|e| SocksError::Connector(e.to_string()))?;
         send.write_all(buf)
             .await
             .map_err(|e| SocksError::Connector(e.to_string()))?;
+        let timeout =
+            std::time::Duration::from_secs(self.client_config.handshake_timeout_secs);
+        let mut reply = [0u8; 1];
+        tokio::time::timeout(timeout, recv.read_exact(&mut reply))
+            .await
+            .map_err(|_| SocksError::Connector("proxy handshake timed out".into()))?
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        if reply[0] != REPLY_SUCCESS {
+            return Err(SocksError::Connector(format!(
+                "proxy rejected request: {}",
+                reply[0]
+            )));
+        }
         Ok((send, recv))
     }
 }
@@ -261,24 +278,24 @@ impl KcpConnector {
 impl RelayConnector for KcpConnector {
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, SocksError> {
         let mut buf = Vec::new();
-        buf.push(0x01); // protocol version
+        buf.push(PROTOCOL_VERSION);
 
         let port = match target {
             TargetAddr::Ip(addr) => {
                 match addr.ip() {
                     std::net::IpAddr::V4(ipv4) => {
-                        buf.push(0x01); // IPv4
+                        buf.push(ADDR_TYPE_IPV4);
                         buf.extend_from_slice(&ipv4.octets());
                     }
                     std::net::IpAddr::V6(ipv6) => {
-                        buf.push(0x04); // IPv6
+                        buf.push(ADDR_TYPE_IPV6);
                         buf.extend_from_slice(&ipv6.octets());
                     }
                 }
                 addr.port()
             }
             TargetAddr::Domain(host, port) => {
-                buf.push(0x03); // Domain
+                buf.push(ADDR_TYPE_DOMAIN);
                 buf.push(host.len() as u8);
                 buf.extend_from_slice(host.as_bytes());
                 *port

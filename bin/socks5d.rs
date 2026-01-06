@@ -8,6 +8,9 @@ use paniq::kcp::client::connect;
 use paniq::kcp::client::ClientConfigWrapper;
 use paniq::obf::Framer;
 use paniq::profile::Profile;
+use paniq::proxy_protocol::{
+    ADDR_TYPE_DOMAIN, ADDR_TYPE_IPV4, ADDR_TYPE_IPV6, PROTOCOL_VERSION, REPLY_SUCCESS,
+};
 use paniq::socks5::{AuthConfig, IoStream, RelayConnector, Socks5Server, SocksError, TargetAddr};
 use tracing_subscriber::EnvFilter;
 
@@ -69,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(&args.listen_addr).await?;
 
     tracing::info!(listen_addr = %args.listen_addr, "SOCKS5 daemon listening");
-    tracing::info!(server_addr = %server_addr, "Connected to proxy server");
+    tracing::info!(server_addr = %server_addr, "Proxy server configured (connect on demand)");
 
     loop {
         let (stream, addr) = listener.accept().await?;
@@ -174,26 +177,40 @@ impl KcpConnector {
     ) -> Result<(paniq::kcp::client::SendStream, paniq::kcp::client::RecvStream), SocksError>
     {
         let conn = self.get_connection().await?;
-        if let Ok(stream) = Self::open_stream(&conn, buf).await {
+        if let Ok(stream) = self.open_stream(&conn, buf).await {
             return Ok(stream);
         }
         self.reset_connection().await;
         let conn = self.get_connection().await?;
-        Self::open_stream(&conn, buf).await
+        self.open_stream(&conn, buf).await
     }
 
     async fn open_stream(
+        &self,
         conn: &paniq::kcp::client::Connection,
         buf: &[u8],
     ) -> Result<(paniq::kcp::client::SendStream, paniq::kcp::client::RecvStream), SocksError>
     {
-        let (mut send, recv) = conn
+        let (mut send, mut recv) = conn
             .open_bi()
             .await
             .map_err(|e| SocksError::Connector(e.to_string()))?;
         send.write_all(buf)
             .await
             .map_err(|e| SocksError::Connector(e.to_string()))?;
+        let timeout =
+            std::time::Duration::from_secs(self.client_config.handshake_timeout_secs);
+        let mut reply = [0u8; 1];
+        tokio::time::timeout(timeout, tokio::io::AsyncReadExt::read_exact(&mut recv, &mut reply))
+            .await
+            .map_err(|_| SocksError::Connector("proxy handshake timed out".into()))?
+            .map_err(|e| SocksError::Connector(e.to_string()))?;
+        if reply[0] != REPLY_SUCCESS {
+            return Err(SocksError::Connector(format!(
+                "proxy rejected request: {}",
+                reply[0]
+            )));
+        }
         Ok((send, recv))
     }
 }
@@ -202,17 +219,17 @@ impl KcpConnector {
 impl RelayConnector for KcpConnector {
     async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, SocksError> {
         let mut buf = Vec::new();
-        buf.push(0x01); // protocol version
+        buf.push(PROTOCOL_VERSION);
 
         let port = match target {
             TargetAddr::Ip(addr) => {
                 match addr.ip() {
                     std::net::IpAddr::V4(ipv4) => {
-                        buf.push(0x01); // IPv4
+                        buf.push(ADDR_TYPE_IPV4);
                         buf.extend_from_slice(&ipv4.octets());
                     }
                     std::net::IpAddr::V6(ipv6) => {
-                        buf.push(0x04); // IPv6
+                        buf.push(ADDR_TYPE_IPV6);
                         buf.extend_from_slice(&ipv6.octets());
                     }
                 }
@@ -220,7 +237,7 @@ impl RelayConnector for KcpConnector {
                 addr.port()
             }
             TargetAddr::Domain(host, port) => {
-                buf.push(0x03); // Domain
+                buf.push(ADDR_TYPE_DOMAIN);
                 buf.push(host.len() as u8);
                 buf.extend_from_slice(host.as_bytes());
                 *port

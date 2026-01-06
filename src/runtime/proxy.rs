@@ -8,35 +8,15 @@ use std::net::SocketAddr;
 use crate::kcp::server::{listen, ServerConfigWrapper};
 use crate::obf::Framer;
 use crate::profile::Profile;
+use crate::proxy_protocol::{
+    ADDR_TYPE_DOMAIN, ADDR_TYPE_IPV4, ADDR_TYPE_IPV6, DOMAIN_LEN_SIZE, IPV4_ADDR_SIZE,
+    IPV6_ADDR_SIZE, PORT_SIZE, PROTOCOL_VERSION, REPLY_GENERAL_FAILURE, REPLY_SUCCESS,
+};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 // ===== Protocol Constants =====
-
-/// Custom proxy protocol version (currently 0x01)
-const PROTOCOL_VERSION: u8 = 0x01;
-
-/// Address type: IPv4 (matches SOCKS5 ATYP)
-const ADDR_TYPE_IPV4: u8 = 0x01;
-
-/// Address type: Domain name (matches SOCKS5 ATYP)
-const ADDR_TYPE_DOMAIN: u8 = 0x03;
-
-/// Address type: IPv6 (matches SOCKS5 ATYP)
-const ADDR_TYPE_IPV6: u8 = 0x04;
-
-/// Size of an IPv4 address in bytes (std::net::Ipv4Addr::OCTETS len)
-const IPV4_ADDR_SIZE: usize = 4;
-
-/// Size of an IPv6 address in bytes (std::net::Ipv6Addr::OCTETS len)
-const IPV6_ADDR_SIZE: usize = 16;
-
-/// Size of a port number in bytes (u16)
-const PORT_SIZE: usize = 2;
-
-/// Size of a domain length prefix in bytes (u8)
-const DOMAIN_LEN_SIZE: usize = 1;
 
 // ===== Buffer Sizes =====
 
@@ -279,7 +259,18 @@ async fn handle_stream(
         _ => return Err(format!("Unknown address type: {}", addr_type).into()),
     };
 
-    let mut target_stream = connect_target(target).await?;
+    let mut target_stream = match connect_target(target).await {
+        Ok(stream) => {
+            if let Err(e) = send.write_all(&[REPLY_SUCCESS]).await {
+                return Err(e.into());
+            }
+            stream
+        }
+        Err(e) => {
+            let _ = send.write_all(&[REPLY_GENERAL_FAILURE]).await;
+            return Err(e.into());
+        }
+    };
 
     // Bidirectional relay with optimized buffer sizes for high throughput.
     // RELAY_BUFFER_SIZE (32KB) reduces syscalls and improves throughput vs 8KB.
