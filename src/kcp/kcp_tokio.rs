@@ -17,7 +17,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::envelope::client::{client_handshake_async, TokioPacketConn};
 use crate::envelope::padding::PaddingPolicy;
@@ -604,17 +604,18 @@ impl KcpServer {
                             };
 
                             debug!("Decoded message type: {:?}, payload length: {}", msg_type, payload.len());
+                            trace!(target: "paniq::transport_dump", direction = "rx", peer = %peer_addr, len = len, msg_type = msg_type.into_u8(), hex = %hex::encode(&buf[..len]));
 
                             match msg_type {
+                                MessageType::Transport => {
+                                    // Handle KCP transport packet
+                                    self.handle_transport(peer_addr, payload).await;
+                                }
                                 MessageType::Initiation => {
                                     // Handle handshake initiation
                                     if let Err(e) = self.handle_handshake_initiation(peer_addr, payload).await {
                                         warn!("Handshake failed from {}: {}", peer_addr, e);
                                     }
-                                }
-                                MessageType::Transport => {
-                                    // Handle KCP transport packet
-                                    self.handle_transport(peer_addr, payload).await;
                                 }
                                 MessageType::CookieReply | MessageType::Response => {
                                     debug!("Unexpected handshake message from {}: {:?}", peer_addr, msg_type);
@@ -912,6 +913,7 @@ async fn run_kcp_engine_server(
 
             // Send to peer
             telemetry::record_udp_out(datagram.len());
+            trace!(target: "paniq::transport_dump", direction = "tx", peer = %peer_addr, len = datagram.len(), msg_type = MessageType::Transport.into_u8(), hex = %hex::encode(&datagram));
             if let Err(e) = socket.send_to(&datagram, peer_addr).await {
                 error!("Failed to send transport packet: {}", e);
                 return Err(kcp_tokio::KcpError::protocol(e.to_string()));
@@ -1267,6 +1269,7 @@ impl KcpClient {
         let framer = self.framer.clone();
         let session = self.session.clone();
         let transport_replay = self.config.transport_replay;
+        let server_addr = self.server_addr;
 
         let handle = tokio::spawn(async move {
             let mut buf = vec![0u8; 65536];
@@ -1284,6 +1287,8 @@ impl KcpClient {
                                 continue;
                             }
                         };
+
+                        trace!(target: "paniq::transport_dump", direction = "rx", peer = %server_addr, len = len, msg_type = msg_type.into_u8(), hex = %hex::encode(&buf[..len]));
 
                         match msg_type {
                             MessageType::Transport => {
@@ -1529,6 +1534,7 @@ async fn run_kcp_engine_client(
 
             // Send to peer
             telemetry::record_udp_out(datagram.len());
+            trace!(target: "paniq::transport_dump", direction = "tx", peer = %_server_addr, len = datagram.len(), msg_type = MessageType::Transport.into_u8(), hex = %hex::encode(&datagram));
             if let Err(e) = socket.send(&datagram).await {
                 error!("Failed to send transport packet: {}", e);
                 return Err(kcp_tokio::KcpError::protocol(e.to_string()));

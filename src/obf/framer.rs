@@ -33,6 +33,21 @@ pub enum MessageType {
     Transport = 4,
 }
 
+impl MessageType {
+    pub fn into_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub fn into_str(self) -> &'static str {
+        match self {
+            MessageType::Initiation => "Initiation",
+            MessageType::Response => "Response",
+            MessageType::CookieReply => "CookieReply",
+            MessageType::Transport => "Transport",
+        }
+    }
+}
+
 pub const FRAME_HEADER_LEN: usize = 4;
 
 pub struct Framer {
@@ -102,8 +117,11 @@ impl Framer {
         if transport_padding >= 0 {
             let pad_len = transport_padding as usize;
             if datagram.len() >= pad_len + FRAME_HEADER_LEN {
-                let type_val =
-                    u32::from_le_bytes(datagram[pad_len..pad_len + FRAME_HEADER_LEN].try_into().unwrap());
+                let type_val = u32::from_le_bytes(
+                    datagram[pad_len..pad_len + FRAME_HEADER_LEN]
+                        .try_into()
+                        .unwrap(),
+                );
                 if let Some(h) = self.header_for(MessageType::Transport) {
                     if h.validate(type_val) {
                         return Ok((
@@ -133,8 +151,11 @@ impl Framer {
             if datagram.len() < pad_len + FRAME_HEADER_LEN {
                 continue;
             }
-            let type_val =
-                u32::from_le_bytes(datagram[pad_len..pad_len + FRAME_HEADER_LEN].try_into().unwrap());
+            let type_val = u32::from_le_bytes(
+                datagram[pad_len..pad_len + FRAME_HEADER_LEN]
+                    .try_into()
+                    .unwrap(),
+            );
             if header.validate(type_val) {
                 return Ok((msg_type, datagram[pad_len + FRAME_HEADER_LEN..].to_vec()));
             }
