@@ -29,12 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Map profile config to server config
     let config = ServerConfigWrapper {
-        max_packet_size: profile
-            .kcp
-            .as_ref()
-            .map(|k| k.max_packet_size)
-            .unwrap_or(1350),
-        max_payload: profile.kcp.as_ref().map(|k| k.max_payload).unwrap_or(1200),
+        max_packet_size: profile.effective_kcp_max_packet_size(),
+        max_payload: profile.effective_kcp_max_payload(),
         send_window: None,
         recv_window: None,
         target_bps: None,

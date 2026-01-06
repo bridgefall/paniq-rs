@@ -119,6 +119,19 @@ impl Default for KcpConfig {
     }
 }
 
+impl KcpConfig {
+    pub fn effective_max_payload(&self) -> usize {
+        let max_packet_size = self.max_packet_size;
+        let max_payload = self.max_payload.min(max_packet_size);
+
+        if self.max_payload == default_max_payload() {
+            max_packet_size
+        } else {
+            max_payload
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TransportPadding {
     #[serde(default = "default_pad_min")]
@@ -330,6 +343,20 @@ impl Profile {
     pub fn preamble_delay_ms_or_default(&self) -> u64 {
         self.preamble_delay_ms
             .unwrap_or_else(default_preamble_delay_ms)
+    }
+
+    pub fn effective_kcp_max_packet_size(&self) -> usize {
+        self.kcp
+            .as_ref()
+            .map(|k| k.max_packet_size)
+            .unwrap_or_else(default_max_packet_size)
+    }
+
+    pub fn effective_kcp_max_payload(&self) -> usize {
+        self.kcp
+            .as_ref()
+            .map(|k| k.effective_max_payload())
+            .unwrap_or_else(|| KcpConfig::default().effective_max_payload())
     }
 
     /// Create a test profile with minimal configuration for integration testing.

@@ -71,18 +71,8 @@ impl SocksHandle {
 
         // Map profile config to client config
         let client_config = ClientConfigWrapper {
-            max_packet_size: config
-                .profile
-                .kcp
-                .as_ref()
-                .map(|k| k.max_packet_size)
-                .unwrap_or(1350),
-            max_payload: config
-                .profile
-                .kcp
-                .as_ref()
-                .map(|k| k.max_payload)
-                .unwrap_or(1200),
+            max_packet_size: config.profile.effective_kcp_max_packet_size(),
+            max_payload: config.profile.effective_kcp_max_payload(),
             send_window: config.profile.kcp.as_ref().and_then(|k| k.send_window),
             recv_window: config.profile.kcp.as_ref().and_then(|k| k.recv_window),
             target_bps: config.profile.kcp.as_ref().and_then(|k| k.target_bps),

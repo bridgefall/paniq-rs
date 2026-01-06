@@ -46,11 +46,6 @@ const RELAY_BUFFER_SIZE: usize = 32768;
 
 // ===== Default Configuration Values =====
 
-/// Default maximum KCP packet size in bytes
-const DEFAULT_MAX_PACKET_SIZE: usize = 1350;
-
-/// Default maximum KCP payload size in bytes
-const DEFAULT_MAX_PAYLOAD: usize = 1200;
 
 /// Default connection idle timeout in seconds
 const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 120;
@@ -116,16 +111,10 @@ impl ProxyHandle {
         let server_config = ServerConfigWrapper {
             max_packet_size: config
                 .profile
-                .kcp
-                .as_ref()
-                .map(|k| k.max_packet_size)
-                .unwrap_or(DEFAULT_MAX_PACKET_SIZE),
+                .effective_kcp_max_packet_size(),
             max_payload: config
                 .profile
-                .kcp
-                .as_ref()
-                .map(|k| k.max_payload)
-                .unwrap_or(DEFAULT_MAX_PAYLOAD),
+                .effective_kcp_max_payload(),
             send_window: config.profile.kcp.as_ref().and_then(|k| k.send_window),
             recv_window: config.profile.kcp.as_ref().and_then(|k| k.recv_window),
             target_bps: config.profile.kcp.as_ref().and_then(|k| k.target_bps),

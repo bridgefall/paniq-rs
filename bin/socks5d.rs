@@ -35,10 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Map profile config to client config
     let kcp_profile = profile.kcp.clone().unwrap_or_default();
-    let relay_buffer_size = kcp_profile.max_payload;
+    let relay_buffer_size = profile.effective_kcp_max_payload();
     let config = ClientConfigWrapper {
-        max_packet_size: kcp_profile.max_packet_size,
-        max_payload: kcp_profile.max_payload,
+        max_packet_size: profile.effective_kcp_max_packet_size(),
+        max_payload: profile.effective_kcp_max_payload(),
         send_window: kcp_profile.send_window,
         recv_window: kcp_profile.recv_window,
         target_bps: kcp_profile.target_bps,

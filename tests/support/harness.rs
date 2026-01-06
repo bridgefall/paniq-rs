@@ -5,6 +5,7 @@
 
 use std::net::SocketAddr;
 
+use paniq::profile::Profile;
 use paniq::runtime::{ProxyConfig, ProxyHandle, SocksConfig, SocksHandle};
 
 /// Full stack harness for integration testing.
@@ -43,6 +44,33 @@ impl StackHarness {
         let socks_config = SocksConfig::new_test(socks_listen_addr, proxy.addr);
 
         // Spawn SOCKS5 server
+        let socks = SocksHandle::spawn(socks_config).await?;
+
+        Ok(Self { proxy, socks })
+    }
+
+    /// Spawn a new full stack using a provided profile.
+    pub async fn spawn_with_profile(
+        proxy_listen_addr: SocketAddr,
+        socks_listen_addr: SocketAddr,
+        profile: Profile,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let proxy_config = ProxyConfig {
+            listen_addr: proxy_listen_addr,
+            profile: profile.clone(),
+        };
+
+        let proxy = ProxyHandle::spawn(proxy_config).await?;
+
+        let mut socks_profile = profile;
+        socks_profile.proxy_addr = proxy.addr.to_string();
+
+        let socks_config = SocksConfig {
+            listen_addr: socks_listen_addr,
+            profile: socks_profile,
+            auth: Some(("user".to_string(), "pass".to_string())),
+        };
+
         let socks = SocksHandle::spawn(socks_config).await?;
 
         Ok(Self { proxy, socks })

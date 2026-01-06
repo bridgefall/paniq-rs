@@ -9,8 +9,10 @@
 mod support;
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use paniq::profile::Profile;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
@@ -28,6 +30,31 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Transfer timeout (per MB) - should complete much faster than this
 const TRANSFER_TIMEOUT_PER_MB: Duration = Duration::from_secs(5);
+
+fn load_benchmark_profile() -> Result<Profile, Box<dyn std::error::Error + Send + Sync>> {
+    let profile_path = std::env::var("PANIQ_BENCH_PROFILE").unwrap_or_else(|_| {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("examples");
+        path.push("profile.json");
+        path.to_string_lossy().to_string()
+    });
+
+    let mut profile = Profile::test_profile();
+    let file_profile = Profile::from_file(&profile_path)?;
+
+    profile.kcp = file_profile.kcp;
+    profile.handshake_timeout = file_profile.handshake_timeout;
+    profile.handshake_attempts = file_profile.handshake_attempts;
+    profile.preamble_delay_ms = file_profile.preamble_delay_ms;
+    profile.preamble_jitter_ms = file_profile.preamble_jitter_ms;
+
+    if let Some(kcp) = profile.kcp.as_mut() {
+        // For throughput benchmarking, use the full packet size as payload to reduce fragmentation.
+        kcp.max_payload = kcp.max_packet_size;
+    }
+
+    Ok(profile)
+}
 
 /// Generate test data - patterned bytes to avoid compression artifacts
 fn generate_test_data(size: usize) -> Vec<u8> {
@@ -275,10 +302,12 @@ async fn run_benchmark(
     let test_data = generate_test_data(data_size);
     let (http_addr, http_handle) = start_http_server(test_data).await;
 
-    // Spawn proxy stack
-    let harness = StackHarness::spawn(
+    // Spawn proxy stack with benchmark profile
+    let profile = load_benchmark_profile()?;
+    let harness = StackHarness::spawn_with_profile(
         "127.0.0.1:0".parse().unwrap(),
         "127.0.0.1:0".parse().unwrap(),
+        profile,
     )
     .await?;
 

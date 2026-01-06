@@ -41,9 +41,6 @@ const SMUX_MAX_RX_QUEUE: usize = 8192;
 // KCP window sizes - match kcp-rs configuration
 const KCP_SND_WND: u32 = 1024;
 const KCP_RCV_WND: u32 = 1024;
-const KCP_NODELAY_INTERVAL_MS: u32 = 10;
-const KCP_FAST_RESEND: u32 = 2;
-const KCP_NO_CONGESTION: bool = true;
 const BITS_PER_BYTE: u64 = 8;
 const MILLIS_PER_SEC: u64 = 1000;
 const MIN_KCP_WINDOW: u32 = 1;
@@ -254,12 +251,14 @@ fn resolve_kcp_windows(
         (Some(bps), Some(rtt)) => compute_bdp_window(mtu, bps, rtt),
         _ => None,
     };
+    let bdp_snd = bdp_window.map(|w| w.max(KCP_SND_WND));
+    let bdp_rcv = bdp_window.map(|w| w.max(KCP_RCV_WND));
 
     let snd_wnd = send_window
-        .or(bdp_window)
+        .or(bdp_snd)
         .unwrap_or(KCP_SND_WND);
     let rcv_wnd = recv_window
-        .or(bdp_window)
+        .or(bdp_rcv)
         .unwrap_or(KCP_RCV_WND);
     let max_snd_queue = max_snd_queue.unwrap_or(snd_wnd);
 
@@ -746,6 +745,7 @@ async fn run_kcp_engine_server(
 
     // Create KCP engine
     let conv = ConvId::from(conv_id);
+    let update_ms = std::cmp::max(1, kcp_config.nodelay.interval);
     let mut engine = KcpEngine::new(conv, kcp_config);
     let coalesce_limit = compute_kcp_coalesce_limit(
         config.max_packet_size,
@@ -817,7 +817,7 @@ async fn run_kcp_engine_server(
     let mut kcp_telemetry = telemetry::enabled().then(KcpTelemetry::new);
 
     // Main I/O loop with periodic updates
-    let mut update_interval = tokio::time::interval(Duration::from_millis(10));
+    let mut update_interval = tokio::time::interval(Duration::from_millis(update_ms as u64));
     let mut pending_reads: VecDeque<Bytes> = VecDeque::new();
     let mut pending_writes: VecDeque<Bytes> = VecDeque::new();
     let max_pending_reads = SMUX_MAX_RX_QUEUE;
@@ -1346,6 +1346,7 @@ async fn run_kcp_engine_client(
 
     // Create KCP engine
     let conv = ConvId::from(conv_id);
+    let update_ms = std::cmp::max(1, kcp_config.nodelay.interval);
     let mut engine = KcpEngine::new(conv, kcp_config);
     let coalesce_limit = compute_kcp_coalesce_limit(
         config.max_packet_size,
@@ -1417,7 +1418,7 @@ async fn run_kcp_engine_client(
     let mut kcp_telemetry = telemetry::enabled().then(KcpTelemetry::new);
 
     // Main I/O loop with periodic updates
-    let mut update_interval = tokio::time::interval(Duration::from_millis(10));
+    let mut update_interval = tokio::time::interval(Duration::from_millis(update_ms as u64));
     let mut pending_reads: VecDeque<Bytes> = VecDeque::new();
     let mut pending_writes: VecDeque<Bytes> = VecDeque::new();
     let max_pending_reads = SMUX_MAX_RX_QUEUE;
@@ -1533,3 +1534,6 @@ async fn run_kcp_engine_client(
         let _ = engine.flush().await;
     }
 }
+const KCP_NODELAY_INTERVAL_MS: u32 = 10;
+const KCP_FAST_RESEND: u32 = 2;
+const KCP_NO_CONGESTION: bool = true;
