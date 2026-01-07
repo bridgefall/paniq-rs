@@ -5,6 +5,8 @@ use once_cell::sync::Lazy;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[uniffi::export]
 pub fn decode_profile_to_json(base64_cbor: String) -> Result<String, PaniqError> {
@@ -36,6 +38,80 @@ pub struct DaemonConfig {
 pub enum PaniqError {
     #[error("Daemon error: {err_msg}")]
     DaemonError { err_msg: String },
+}
+
+#[uniffi::export(callback_interface)]
+pub trait PaniqLogHandler: Send + Sync {
+    fn log(&self, level: LogLevel, message: String);
+}
+
+#[derive(uniffi::Enum)]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl From<tracing::Level> for LogLevel {
+    fn from(level: tracing::Level) -> Self {
+        match level {
+            tracing::Level::DEBUG | tracing::Level::TRACE => LogLevel::Debug,
+            tracing::Level::INFO => LogLevel::Info,
+            tracing::Level::WARN => LogLevel::Warn,
+            tracing::Level::ERROR => LogLevel::Error,
+        }
+    }
+}
+
+struct PaniqLogger {
+    handler: Box<dyn PaniqLogHandler>,
+}
+
+impl<S> tracing_subscriber::Layer<S> for PaniqLogger
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut message = String::new();
+        let mut visitor = MessageVisitor {
+            message: &mut message,
+        };
+        event.record(&mut visitor);
+
+        self.handler
+            .log((*event.metadata().level()).into(), message);
+    }
+}
+
+struct MessageVisitor<'a> {
+    message: &'a mut String,
+}
+
+impl<'a> tracing::field::Visit for MessageVisitor<'a> {
+    fn record_debug(&mut self, _field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write;
+        write!(self.message, "{:?}", value).ok();
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message.push_str(value);
+        } else {
+            self.message
+                .push_str(&format!(" {}={}", field.name(), value));
+        }
+    }
+}
+
+#[uniffi::export]
+pub fn setup_logging(handler: Box<dyn PaniqLogHandler>) {
+    let logger = PaniqLogger { handler };
+    let _ = tracing_subscriber::registry().with(logger).try_init();
 }
 
 #[derive(uniffi::Object)]
