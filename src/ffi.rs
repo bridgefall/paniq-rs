@@ -1,9 +1,29 @@
 use crate::profile::Profile;
 use crate::runtime::{SocksConfig, SocksHandle};
+use base64::Engine;
 use once_cell::sync::Lazy;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+#[uniffi::export]
+pub fn decode_profile_to_json(base64_cbor: String) -> Result<String, PaniqError> {
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(base64_cbor.trim())
+        .map_err(|e| PaniqError::DaemonError {
+            err_msg: format!("Base64 decode error: {}", e),
+        })?;
+
+    let profile = crate::profile::cbor::decode_compact_profile(&raw).map_err(|e| {
+        PaniqError::DaemonError {
+            err_msg: format!("CBOR decode error: {}", e),
+        }
+    })?;
+
+    serde_json::to_string_pretty(&profile).map_err(|e| PaniqError::DaemonError {
+        err_msg: format!("JSON encode error: {}", e),
+    })
+}
 
 #[derive(uniffi::Record)]
 pub struct DaemonConfig {

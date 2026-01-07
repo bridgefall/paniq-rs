@@ -613,3 +613,4 @@ pub mod serde_bool {
         Option::deserialize(deserializer)
     }
 }
+pub mod cbor;

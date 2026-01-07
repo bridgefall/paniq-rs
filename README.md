@@ -116,6 +116,23 @@ The crate exposes the following features to minimize compile-time deps:
 
 *   **`kcp`**: Enables the core `PaniqClient`, `PaniqStream`, and KCP transport logic. Required for SDK usage.
 *   **`socks5`**: Enables the SOCKS5 protocol handling logic. Required for `socks5d`.
+*   **`mobile`**: Enables UniFFI bindings and FFI-exported functions for mobile integration (implies `kcp` and `socks5`).
+
+## Mobile & FFI
+
+`paniq-rs` provides high-performance FFI bindings for mobile applications (Android/iOS) via **UniFFI**. This allows mobile apps to leverage the core Paniq logic for profile parsing and daemon management.
+
+- **Profile Decoding**: Easily decode compact, Base64-encoded CBOR profiles (e.g., from `pnq://` deep links) into JSON for UI display or processing.
+- **FFI Usage**: The bindings are exposed when compiling with the `mobile` feature.
+
+### Example: Decoding a CBOR Profile via FFI
+```rust
+use paniq::ffi::decode_profile_to_json;
+
+// Decode a Base64-wrapped CBOR profile string
+let json = decode_profile_to_json(b64_cbor_string)?;
+```
+For a complete demonstration, see [`examples/ffi_usage.rs`](examples/ffi_usage.rs).
 
 ## Getting Started
 
