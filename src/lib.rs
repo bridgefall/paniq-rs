@@ -18,5 +18,8 @@ pub mod socks5;
 #[cfg(feature = "socks5")]
 pub mod control;
 
-#[cfg(all(feature = "kcp", feature = "socks5"))]
+#[cfg(all(feature = "socks5", feature = "kcp"))]
+pub mod ffi;
 pub mod runtime;
+
+uniffi::setup_scaffolding!("paniq");

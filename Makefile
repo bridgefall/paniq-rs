@@ -75,7 +75,7 @@ test: test-unit test-integration
 .PHONY: test-unit
 test-unit:
 	@echo "$(COLOR_BLUE)Running unit tests...$(COLOR_RESET)"
-	$(CARGO) test --lib
+	$(CARGO) test --lib $(FEATURES_FULL)
 
 .PHONY: test-integration
 test-integration: test-kcp
