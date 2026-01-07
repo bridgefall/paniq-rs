@@ -33,6 +33,8 @@ async-trait = { version = "0.1", optional = true }
 once_cell = "1.19"
 fast-socks5 = "0.10.0"
 clap = { version = "4.4", features = ["derive"] }
+ciborium = "0.2"
+chrono = "0.4"
 kcp-rs = { version = "0.2.4", optional = true }
 kcp-tokio = { version = "0.3", optional = true }
 async_smux = { version = "0.3.4", optional = true }
