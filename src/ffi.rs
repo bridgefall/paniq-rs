@@ -66,6 +66,7 @@ impl From<tracing::Level> for LogLevel {
 
 struct PaniqLogger {
     handler: Box<dyn PaniqLogHandler>,
+    min_level: tracing::Level,
 }
 
 impl<S> tracing_subscriber::Layer<S> for PaniqLogger
@@ -77,6 +78,11 @@ where
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
+        // Filter events by level
+        if *event.metadata().level() > self.min_level {
+            return;
+        }
+
         let mut message = String::new();
         let mut visitor = MessageVisitor {
             message: &mut message,
@@ -109,9 +115,17 @@ impl<'a> tracing::field::Visit for MessageVisitor<'a> {
 }
 
 #[uniffi::export]
-pub fn setup_logging(handler: Box<dyn PaniqLogHandler>) {
-    let logger = PaniqLogger { handler };
-    let _ = tracing_subscriber::registry().with(logger).try_init();
+pub fn setup_logging(handler: Box<dyn PaniqLogHandler>, level: LogLevel) {
+    let min_level = match level {
+        LogLevel::Error => tracing::Level::ERROR,
+        LogLevel::Warn => tracing::Level::WARN,
+        LogLevel::Info => tracing::Level::INFO,
+        LogLevel::Debug => tracing::Level::DEBUG,
+    };
+    let logger = PaniqLogger { handler, min_level };
+    let _ = tracing_subscriber::registry()
+        .with(logger)
+        .try_init();
 }
 
 #[derive(uniffi::Object)]
