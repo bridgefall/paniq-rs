@@ -1,3 +1,5 @@
+use crate::config::FileConfig;
+use crate::config::Socks5FileConfig as Config;
 use crate::profile::Profile;
 use crate::runtime::{SocksConfig, SocksHandle};
 use base64::Engine;
@@ -27,11 +29,61 @@ pub fn decode_profile_to_json(base64_cbor: String) -> Result<String, PaniqError>
     })
 }
 
+/// Configuration for starting the daemon (simplified version for UniFFI).
 #[derive(uniffi::Record)]
-pub struct DaemonConfig {
+pub struct DaemonStartConfig {
     pub profile_path: String,
     pub listen_addr: String,
     pub proxy_addr_override: Option<String>,
+}
+
+/// Full daemon configuration for runtime settings.
+#[derive(uniffi::Record)]
+pub struct DaemonSettings {
+    pub log_level: String,
+    pub workers: u32,
+    pub max_connections: u32,
+    pub dial_timeout_ms: u64,
+    pub accept_timeout_ms: u64,
+    pub idle_timeout_ms: u64,
+    pub metrics_interval_ms: u64,
+    pub listen_addr: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+impl From<DaemonSettings> for Config {
+    fn from(settings: DaemonSettings) -> Self {
+        Self {
+            log_level: settings.log_level,
+            workers: settings.workers as usize,
+            max_connections: settings.max_connections as usize,
+            dial_timeout: std::time::Duration::from_millis(settings.dial_timeout_ms),
+            accept_timeout: std::time::Duration::from_millis(settings.accept_timeout_ms),
+            idle_timeout: std::time::Duration::from_millis(settings.idle_timeout_ms),
+            metrics_interval: std::time::Duration::from_millis(settings.metrics_interval_ms),
+            listen_addr: settings.listen_addr,
+            username: settings.username,
+            password: settings.password,
+        }
+    }
+}
+
+impl From<Config> for DaemonSettings {
+    fn from(config: Config) -> Self {
+        Self {
+            log_level: config.log_level,
+            workers: config.workers as u32,
+            max_connections: config.max_connections as u32,
+            dial_timeout_ms: config.dial_timeout.as_millis() as u64,
+            accept_timeout_ms: config.accept_timeout.as_millis() as u64,
+            idle_timeout_ms: config.idle_timeout.as_millis() as u64,
+            metrics_interval_ms: config.metrics_interval.as_millis() as u64,
+            listen_addr: config.listen_addr,
+            username: config.username,
+            password: config.password,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -123,9 +175,7 @@ pub fn setup_logging(handler: Box<dyn PaniqLogHandler>, level: LogLevel) {
         LogLevel::Debug => tracing::Level::DEBUG,
     };
     let logger = PaniqLogger { handler, min_level };
-    let _ = tracing_subscriber::registry()
-        .with(logger)
-        .try_init();
+    let _ = tracing_subscriber::registry().with(logger).try_init();
 }
 
 #[derive(uniffi::Object)]
@@ -152,7 +202,7 @@ pub fn get_daemon() -> Arc<PaniqDaemon> {
 
 #[uniffi::export]
 impl PaniqDaemon {
-    pub fn start(&self, config: DaemonConfig) -> Result<(), PaniqError> {
+    pub fn start(&self, config: DaemonStartConfig) -> Result<(), PaniqError> {
         let mut handle_guard = self
             .handle
             .try_lock()
@@ -216,4 +266,33 @@ impl PaniqDaemon {
             false
         }
     }
+}
+
+/// Load daemon configuration from a JSON file.
+///
+/// Returns the loaded configuration or default values if the file doesn't exist.
+#[uniffi::export]
+pub fn load_daemon_config(path: String) -> Result<DaemonSettings, PaniqError> {
+    let config = Config::load_from_file(&path).map_err(|e| PaniqError::DaemonError {
+        err_msg: format!("Failed to load config: {}", e),
+    })?;
+    Ok(config.into())
+}
+
+/// Save daemon configuration to a JSON file.
+#[uniffi::export]
+pub fn save_daemon_config(path: String, settings: DaemonSettings) -> Result<(), PaniqError> {
+    let config: Config = settings.into();
+    config
+        .save_to_file(&path)
+        .map_err(|e| PaniqError::DaemonError {
+            err_msg: format!("Failed to save config: {}", e),
+        })?;
+    Ok(())
+}
+
+/// Get default daemon configuration.
+#[uniffi::export]
+pub fn get_default_daemon_settings() -> DaemonSettings {
+    Config::default().into()
 }

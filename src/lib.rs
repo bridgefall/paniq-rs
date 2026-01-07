@@ -1,5 +1,6 @@
 #[cfg(feature = "kcp")]
 pub mod client;
+pub mod config;
 pub mod envelope;
 #[cfg(feature = "kcp")]
 pub mod io;

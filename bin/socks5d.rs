@@ -1,4 +1,5 @@
 use clap::Parser;
+use paniq::config::{FileConfig, Socks5FileConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,24 +19,46 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Initialize tracing subscriber with environment filter
+    let args = Args::parse();
+
+    // Load daemon config if provided
+    let daemon_config = if let Some(config_path) = &args.config {
+        Socks5FileConfig::load_from_file(config_path)?
+    } else {
+        Socks5FileConfig::default()
+    };
+
+    // Initialize tracing with config log level
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
-                .with_default_directive(tracing::Level::INFO.into())
+                .with_default_directive(daemon_config.log_level_as_tracing().into())
                 .from_env_lossy(),
         )
         .init();
 
-    let args = Args::parse();
-    let profile = Profile::from_file(&args.profile)?;
+    // CLI args override config file values
+    let listen_addr = args
+        .listen
+        .clone()
+        .unwrap_or_else(|| daemon_config.listen_addr.clone());
+    let profile_path = args.profile.clone();
+
+    let profile = Profile::from_file(&profile_path)?;
     let obf_config = profile.obf_config();
 
-    let server_addr = args
+    // Determine server address from CLI args, config, or profile
+    let proxy_addr_str = args
         .proxy_addr
-        .as_deref()
-        .unwrap_or(&profile.proxy_addr)
-        .parse()?;
+        .clone()
+        .or_else(|| {
+            // No direct override in Socks5FileConfig to match Go,
+            // but we could keep it if it's useful.
+            // Go's ToServerConfig uses p.ProxyAddr.
+            None
+        })
+        .unwrap_or_else(|| profile.proxy_addr.clone());
+    let server_addr = proxy_addr_str.parse()?;
 
     // Map profile config to client config
     let kcp_profile = profile.kcp.clone().unwrap_or_default();
@@ -72,13 +95,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         auth,
         relay_buffer_size,
     ));
-    let listener = TcpListener::bind(&args.listen).await?;
+    let listener = TcpListener::bind(&listen_addr).await?;
 
-    tracing::info!(listen_addr = %args.listen, "SOCKS5 daemon listening");
+    tracing::info!(listen_addr = %listen_addr, "SOCKS5 daemon listening");
     tracing::info!(server_addr = %server_addr, "Proxy server configured (connect on demand)");
 
     // Start control server if control socket is provided
-    if let Some(control_socket) = &args.control_socket {
+    let control_socket: Option<PathBuf> = args.control_socket.clone().or_else(|| {
+        // Try to get control socket from environment if not provided via CLI
+        std::env::var("PANIQ_CONTROL_SOCKET")
+            .ok()
+            .map(PathBuf::from)
+    });
+
+    if let Some(control_socket) = &control_socket {
         let control_server = ControlServer::bind(control_socket)?;
         tracing::info!(socket = %control_socket.display(), "Control server listening");
         tokio::spawn(async move {
@@ -120,8 +150,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Paniq SOCKS5 daemon", long_about = None)]
 struct Args {
+    #[arg(short, long, help = "Path to daemon config JSON file")]
+    config: Option<PathBuf>,
+
     #[arg(short, long, help = "Listen address (e.g. 127.0.0.1:1080)")]
-    listen: String,
+    listen: Option<String>,
 
     #[arg(short, long, help = "Path to profile JSON file")]
     profile: PathBuf,

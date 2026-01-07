@@ -1,4 +1,5 @@
 use clap::Parser;
+use paniq::config::{FileConfig, ProxyFileConfig};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -19,17 +20,28 @@ const RELAY_BUFFER_SIZE: usize = 32 * 1024;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Initialize tracing subscriber with environment filter
+    let args = Args::parse();
+
+    // Load daemon config if provided
+    let daemon_config = if let Some(config_path) = &args.config {
+        ProxyFileConfig::load_from_file(config_path)?
+    } else {
+        ProxyFileConfig::default()
+    };
+
+    // Initialize tracing with config log level
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
-                .with_default_directive(tracing::Level::INFO.into())
+                .with_default_directive(daemon_config.log_level_as_tracing().into())
                 .from_env_lossy(),
         )
         .init();
 
-    let args = Args::parse();
-    let profile = Profile::from_file(&args.profile)?;
+    // CLI args override config file values
+    let profile_path = args.profile.clone();
+
+    let profile = Profile::from_file(&profile_path)?;
     let framer = Framer::new(profile.obf_config())?;
 
     // Map profile config to server config
@@ -49,7 +61,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         preamble_delay_ms: 5,
     };
 
-    let endpoint = listen(args.listen, framer, config).await?;
+    let listen_addr: SocketAddr = args.listen.unwrap_or_else(|| {
+        daemon_config
+            .listen_addr
+            .parse()
+            .expect("invalid listen_addr in config")
+    });
+
+    let endpoint = listen(listen_addr, framer, config).await?;
     tracing::info!(listen_addr = %endpoint.local_addr(), "proxy-server listening");
 
     // Accept incoming connections and handle them
@@ -322,8 +341,11 @@ where
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Paniq proxy server", long_about = None)]
 struct Args {
+    #[arg(short, long, help = "Path to daemon config JSON file")]
+    config: Option<PathBuf>,
+
     #[arg(short, long, help = "Listen address (e.g. 0.0.0.0:9000)")]
-    listen: SocketAddr,
+    listen: Option<SocketAddr>,
 
     #[arg(short, long, help = "Path to profile JSON file")]
     profile: PathBuf,
