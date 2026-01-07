@@ -1,3 +1,4 @@
+use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -26,12 +27,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .init();
 
-    let args = parse_args()?;
+    let args = Args::parse();
     let profile = Profile::from_file(&args.profile)?;
     let obf_config = profile.obf_config();
 
     let server_addr = args
-        .proxy_addr_override
+        .proxy_addr
         .as_deref()
         .unwrap_or(&profile.proxy_addr)
         .parse()?;
@@ -58,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let connector = PaniqConnector::new(client);
 
     let auth = args
-        .auth
+        .auth_tuple()
         .map(|(user, pass)| {
             let mut users = std::collections::HashMap::new();
             users.insert(user, pass);
@@ -71,9 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         auth,
         relay_buffer_size,
     ));
-    let listener = TcpListener::bind(&args.listen_addr).await?;
+    let listener = TcpListener::bind(&args.listen).await?;
 
-    tracing::info!(listen_addr = %args.listen_addr, "SOCKS5 daemon listening");
+    tracing::info!(listen_addr = %args.listen, "SOCKS5 daemon listening");
     tracing::info!(server_addr = %server_addr, "Proxy server configured (connect on demand)");
 
     // Start control server if control socket is provided
@@ -116,35 +117,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Ok(())
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about = "Paniq SOCKS5 daemon", long_about = None)]
 struct Args {
-    listen_addr: String,
+    #[arg(short, long, help = "Listen address (e.g. 127.0.0.1:1080)")]
+    listen: String,
+
+    #[arg(short, long, help = "Path to profile JSON file")]
     profile: PathBuf,
-    proxy_addr_override: Option<String>,
-    auth: Option<(String, String)>,
+
+    #[arg(long, help = "Override proxy address from profile")]
+    proxy_addr: Option<String>,
+
+    #[arg(short, long, help = "Username for SOCKS5 authentication")]
+    user: Option<String>,
+
+    #[arg(short, long, help = "Password for SOCKS5 authentication")]
+    auth: Option<String>,
+
+    #[arg(long, help = "Path to control Unix domain socket")]
     control_socket: Option<PathBuf>,
 }
 
-fn parse_args() -> Result<Args, pico_args::Error> {
-    let mut pargs = pico_args::Arguments::from_env();
-    let listen_addr = pargs.value_from_str(["-l", "--listen"])?;
-    let profile: PathBuf = pargs.value_from_str(["-p", "--profile"])?;
-    let proxy_addr_override = pargs.opt_value_from_str("--proxy-addr")?;
-    let control_socket = pargs.opt_value_from_str("--control-socket")?;
-    let auth = if let (Ok(user), Ok(pass)) = (
-        pargs.value_from_str(["-u", "--user"]),
-        pargs.value_from_str(["-a", "--auth"]),
-    ) {
-        Some((user, pass))
-    } else {
-        None
-    };
-    Ok(Args {
-        listen_addr,
-        profile,
-        proxy_addr_override,
-        auth,
-        control_socket,
-    })
+impl Args {
+    fn auth_tuple(&self) -> Option<(String, String)> {
+        match (&self.user, &self.auth) {
+            (Some(user), Some(auth)) => Some((user.clone(), auth.clone())),
+            _ => None,
+        }
+    }
 }
 
 struct PaniqConnector {

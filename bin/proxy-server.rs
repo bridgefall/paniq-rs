@@ -1,3 +1,4 @@
+use clap::Parser;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -27,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .init();
 
-    let args = parse_args()?;
+    let args = Args::parse();
     let profile = Profile::from_file(&args.profile)?;
     let framer = Framer::new(profile.obf_config())?;
 
@@ -318,15 +319,12 @@ where
     }))
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about = "Paniq proxy server", long_about = None)]
 struct Args {
+    #[arg(short, long, help = "Listen address (e.g. 0.0.0.0:9000)")]
     listen: SocketAddr,
+
+    #[arg(short, long, help = "Path to profile JSON file")]
     profile: PathBuf,
-}
-
-fn parse_args() -> Result<Args, pico_args::Error> {
-    let mut pargs = pico_args::Arguments::from_env();
-    let listen = pargs.value_from_str(["-l", "--listen"])?;
-    let profile: PathBuf = pargs.value_from_str(["-p", "--profile"])?;
-
-    Ok(Args { listen, profile })
 }

@@ -1,3 +1,4 @@
+use clap::{Parser, Subcommand};
 use paniq::control::{ControlRequest, ControlResponse};
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -5,10 +6,10 @@ use tokio::net::UnixStream;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = parse_args()?;
+    let args = Args::parse();
 
-    match args.command.as_str() {
-        "ping" => {
+    match args.command {
+        Commands::Ping => {
             let response = send_command(args.socket, ControlRequest::Ping).await?;
             match response {
                 ControlResponse::Pong => {
@@ -24,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        "stats" => {
+        Commands::Stats => {
             let response = send_command(args.socket, ControlRequest::GetStats).await?;
             match response {
                 ControlResponse::Stats(stats) => {
@@ -39,11 +40,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     std::process::exit(1);
                 }
             }
-        }
-        _ => {
-            eprintln!("Unknown command: {}", args.command);
-            eprintln!("Available commands: ping, stats");
-            std::process::exit(1);
         }
     }
 
@@ -72,15 +68,20 @@ async fn send_command(
     }
 }
 
+#[derive(Parser, Debug)]
+#[command(author, version, about = "Paniq control tool", long_about = None)]
 struct Args {
+    #[arg(short, long, help = "Path to control Unix domain socket")]
     socket: PathBuf,
-    command: String,
+
+    #[command(subcommand)]
+    command: Commands,
 }
 
-fn parse_args() -> Result<Args, pico_args::Error> {
-    let mut pargs = pico_args::Arguments::from_env();
-    let socket: PathBuf = pargs.value_from_str(["-s", "--socket"])?;
-    let command = pargs.free_from_str()?;
-
-    Ok(Args { socket, command })
+#[derive(Subcommand, Debug)]
+enum Commands {
+    #[command(about = "Ping the daemon")]
+    Ping,
+    #[command(about = "Get daemon statistics")]
+    Stats,
 }
