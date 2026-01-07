@@ -52,6 +52,23 @@ pub struct DaemonSettings {
     pub password: Option<String>,
 }
 
+/// Snapshot of transport statistics.
+#[derive(uniffi::Record)]
+pub struct TransportStats {
+    pub udp_in_bytes: u64,
+    pub udp_out_bytes: u64,
+    pub transport_payload_in_bytes: u64,
+    pub transport_payload_out_bytes: u64,
+    pub transport_padding_in_bytes: u64,
+    pub transport_padding_out_bytes: u64,
+    pub transport_frame_in_bytes: u64,
+    pub transport_frame_out_bytes: u64,
+    pub transport_invalid_length: u64,
+    pub transport_counter_reject: u64,
+    pub transport_payload_too_large: u64,
+    pub active_connections: u64,
+}
+
 impl From<DaemonSettings> for Config {
     fn from(settings: DaemonSettings) -> Self {
         Self {
@@ -264,6 +281,24 @@ impl PaniqDaemon {
             handle_guard.is_some()
         } else {
             false
+        }
+    }
+
+    pub fn get_stats(&self) -> TransportStats {
+        let snapshot = crate::telemetry::transport_snapshot();
+        TransportStats {
+            udp_in_bytes: snapshot.udp_in_bytes,
+            udp_out_bytes: snapshot.udp_out_bytes,
+            transport_payload_in_bytes: snapshot.transport_payload_in_bytes,
+            transport_payload_out_bytes: snapshot.transport_payload_out_bytes,
+            transport_padding_in_bytes: snapshot.transport_padding_in_bytes,
+            transport_padding_out_bytes: snapshot.transport_padding_out_bytes,
+            transport_frame_in_bytes: snapshot.transport_frame_in_bytes,
+            transport_frame_out_bytes: snapshot.transport_frame_out_bytes,
+            transport_invalid_length: snapshot.transport_invalid_length,
+            transport_counter_reject: snapshot.transport_counter_reject,
+            transport_payload_too_large: snapshot.transport_payload_too_large,
+            active_connections: snapshot.active_connections,
         }
     }
 }
