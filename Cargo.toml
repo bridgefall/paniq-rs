@@ -10,6 +10,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/uniffi-bindgen.rs"
+required-features = ["mobile"]
 
 [dependencies]
 rand = "0.8"
@@ -40,8 +41,8 @@ futures = { version = "0.3.31" }
 tokio-util = { version = "0.7", optional = true }
 bincode = "1.3"
 tempfile = { version = "3", optional = true }
-uniffi = { version = "0.28", features = ["tokio", "cli"] }
-uniffi_macros = "0.28"
+uniffi = { version = "0.28", features = ["tokio", "cli"], optional = true }
+uniffi_macros = { version = "0.28", optional = true }
 
 [features]
 default = []
@@ -54,6 +55,7 @@ kcp = [
     "tokio-util",
 ]
 socks5 = ["tokio", "dep:tracing-subscriber", "async-trait"]
+mobile = ["kcp", "socks5", "dep:uniffi", "dep:uniffi_macros"]
 
 [dev-dependencies]
 rand_chacha = "0.3"
