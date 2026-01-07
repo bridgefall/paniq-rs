@@ -18,8 +18,9 @@ pub mod socks5;
 #[cfg(feature = "socks5")]
 pub mod control;
 
-#[cfg(all(feature = "socks5", feature = "kcp"))]
+#[cfg(feature = "mobile")]
 pub mod ffi;
 pub mod runtime;
 
+#[cfg(feature = "mobile")]
 uniffi::setup_scaffolding!("paniq");
