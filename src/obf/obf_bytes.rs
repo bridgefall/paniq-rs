@@ -24,7 +24,7 @@ impl BytesObf {
         if trimmed.is_empty() {
             return Err(BytesObfError::Empty);
         }
-        if trimmed.len() % 2 != 0 {
+        if !trimmed.len().is_multiple_of(2) {
             return Err(BytesObfError::OddSymbols);
         }
         let data = Vec::from_hex(trimmed).map_err(|e| BytesObfError::Parse(e.to_string()))?;
