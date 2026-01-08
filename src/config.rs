@@ -113,6 +113,9 @@ pub struct Socks5FileConfig {
 
     /// Log level: "debug", "info", "warn", "error"
     pub log_level: String,
+
+    /// Optional control socket path
+    pub control_socket: Option<String>,
 }
 
 impl Default for Socks5FileConfig {
@@ -128,6 +131,7 @@ impl Default for Socks5FileConfig {
             idle_timeout: Duration::from_secs(120),
             metrics_interval: Duration::from_secs(10),
             log_level: "info".to_string(),
+            control_socket: None,
         }
     }
 }
@@ -179,6 +183,9 @@ pub struct ProxyFileConfig {
 
     /// Log level: "debug", "info", "warn", "error"
     pub log_level: String,
+
+    /// Optional control socket path
+    pub control_socket: Option<String>,
 }
 
 impl Default for ProxyFileConfig {
@@ -192,6 +199,7 @@ impl Default for ProxyFileConfig {
             idle_timeout: Duration::from_secs(120),
             metrics_interval: Duration::from_secs(10),
             log_level: "info".to_string(),
+            control_socket: None,
         }
     }
 }

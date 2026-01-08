@@ -101,12 +101,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!(server_addr = %server_addr, "Proxy server configured (connect on demand)");
 
     // Start control server if control socket is provided
-    let control_socket: Option<PathBuf> = args.control_socket.clone().or_else(|| {
-        // Try to get control socket from environment if not provided via CLI
-        std::env::var("PANIQ_CONTROL_SOCKET")
-            .ok()
-            .map(PathBuf::from)
-    });
+    let control_socket: Option<PathBuf> = args
+        .control_socket
+        .clone()
+        .or_else(|| daemon_config.control_socket.clone().map(PathBuf::from))
+        .or_else(|| {
+            // Try to get control socket from environment if not provided via config/CLI
+            std::env::var("PANIQ_CONTROL_SOCKET")
+                .ok()
+                .map(PathBuf::from)
+        });
 
     if let Some(control_socket) = &control_socket {
         let control_server = ControlServer::bind(control_socket)?;

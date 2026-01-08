@@ -71,6 +71,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let endpoint = listen(listen_addr, framer, config).await?;
     tracing::info!(listen_addr = %endpoint.local_addr(), "proxy-server listening");
 
+    // Start control server if control socket is provided
+    let control_socket: Option<PathBuf> = args
+        .control_socket
+        .clone()
+        .or_else(|| daemon_config.control_socket.clone().map(PathBuf::from))
+        .or_else(|| {
+            // Try to get control socket from environment if not provided via config/CLI
+            std::env::var("PANIQ_CONTROL_SOCKET")
+                .ok()
+                .map(PathBuf::from)
+        });
+
+    if let Some(control_socket) = &control_socket {
+        let control_server = paniq::control::ControlServer::bind(control_socket)?;
+        tracing::info!(socket = %control_socket.display(), "Control server listening");
+        tokio::spawn(async move {
+            if let Err(e) = control_server.run().await {
+                tracing::error!(error = %e, "Control server error");
+            }
+        });
+    }
+
     // Accept incoming connections and handle them
     loop {
         if let Some(conn) = endpoint.accept().await {
@@ -349,4 +371,7 @@ struct Args {
 
     #[arg(short, long, help = "Path to profile JSON file")]
     profile: PathBuf,
+
+    #[arg(long, help = "Path to control Unix domain socket")]
+    control_socket: Option<PathBuf>,
 }

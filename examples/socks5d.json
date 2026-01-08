@@ -8,5 +8,6 @@
     "accept_timeout": "500ms",
     "idle_timeout": "2m",
     "metrics_interval": "10s",
-    "log_level": "info"
+    "log_level": "info",
+    "control_socket": "/tmp/socks5d.sock"
 }

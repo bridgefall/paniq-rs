@@ -76,13 +76,15 @@ impl TransportSnapshot {
 pub(crate) fn enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var(TELEMETRY_ENV)
+        let res = std::env::var(TELEMETRY_ENV)
             .ok()
             .map(|value| match value.to_ascii_lowercase().as_str() {
                 "1" | "true" | "yes" | "on" => true,
                 _ => false,
             })
-            .unwrap_or(false)
+            .unwrap_or(true);
+        tracing::info!(enabled = res, "Telemetry status initialized");
+        res
     })
 }
 
@@ -90,6 +92,7 @@ pub(crate) fn record_udp_in(bytes: usize) {
     if !enabled() {
         return;
     }
+    tracing::trace!(bytes = bytes, "record_udp_in");
     UDP_BYTES_IN.fetch_add(bytes as u64, Ordering::Relaxed);
 }
 
@@ -97,6 +100,7 @@ pub(crate) fn record_udp_out(bytes: usize) {
     if !enabled() {
         return;
     }
+    tracing::trace!(bytes = bytes, "record_udp_out");
     UDP_BYTES_OUT.fetch_add(bytes as u64, Ordering::Relaxed);
 }
 
@@ -104,6 +108,7 @@ pub(crate) fn record_transport_out(payload_len: usize, pad_len: usize, frame_len
     if !enabled() {
         return;
     }
+    tracing::trace!(payload_len, pad_len, frame_len, "record_transport_out");
     TRANSPORT_PAYLOAD_OUT.fetch_add(payload_len as u64, Ordering::Relaxed);
     TRANSPORT_PADDING_OUT.fetch_add(pad_len as u64, Ordering::Relaxed);
     TRANSPORT_FRAME_OUT.fetch_add(frame_len as u64, Ordering::Relaxed);
@@ -113,6 +118,7 @@ pub(crate) fn record_transport_in(payload_len: usize, pad_len: usize, frame_len:
     if !enabled() {
         return;
     }
+    tracing::trace!(payload_len, pad_len, frame_len, "record_transport_in");
     TRANSPORT_PAYLOAD_IN.fetch_add(payload_len as u64, Ordering::Relaxed);
     TRANSPORT_PADDING_IN.fetch_add(pad_len as u64, Ordering::Relaxed);
     TRANSPORT_FRAME_IN.fetch_add(frame_len as u64, Ordering::Relaxed);
@@ -122,6 +128,7 @@ pub(crate) fn record_transport_invalid_length() {
     if !enabled() {
         return;
     }
+    tracing::warn!("record_transport_invalid_length");
     TRANSPORT_INVALID_LENGTH.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -129,6 +136,7 @@ pub(crate) fn record_transport_counter_reject() {
     if !enabled() {
         return;
     }
+    tracing::warn!("record_transport_counter_reject");
     TRANSPORT_COUNTER_REJECT.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -136,14 +144,17 @@ pub(crate) fn record_transport_payload_too_large() {
     if !enabled() {
         return;
     }
+    tracing::warn!("record_transport_payload_too_large");
     TRANSPORT_PAYLOAD_TOO_LARGE.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_connection_open() {
+    tracing::debug!("record_connection_open");
     ACTIVE_CONNECTIONS.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_connection_close() {
+    tracing::debug!("record_connection_close");
     ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::Relaxed);
 }
 

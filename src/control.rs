@@ -180,4 +180,42 @@ mod tests {
         let response: ControlResponse = serde_json::from_slice(&buf).unwrap();
         assert!(matches!(response, ControlResponse::Pong));
     }
+
+    #[tokio::test]
+    async fn test_control_server_stats() {
+        let temp_socket = tempfile::NamedTempFile::new().unwrap();
+        let socket_path = temp_socket.path().with_extension("sock_stats");
+        let server = ControlServer::bind(&socket_path).unwrap();
+
+        // Increment some stats
+        crate::telemetry::record_connection_open();
+        crate::telemetry::record_udp_in(100);
+
+        // Spawn server in background
+        tokio::spawn(async move {
+            let _ = server.run().await;
+        });
+
+        // Give server time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        // Connect and send GetStats
+        let mut stream = tokio::net::UnixStream::connect(&socket_path).await.unwrap();
+
+        let req = ControlRequest::GetStats;
+        let bytes = serde_json::to_vec(&req).unwrap();
+        stream.write_all(&bytes).await.unwrap();
+        stream.shutdown().await.unwrap();
+
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        let response: ControlResponse = serde_json::from_slice(&buf).unwrap();
+        match response {
+            ControlResponse::Stats(stats) => {
+                assert!(stats.active_connections >= 1);
+                assert!(stats.udp_in_bytes >= 100);
+            }
+            _ => panic!("Expected Stats response, got {:?}", response),
+        }
+    }
 }

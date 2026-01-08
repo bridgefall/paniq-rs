@@ -82,6 +82,7 @@ impl From<DaemonSettings> for Config {
             listen_addr: settings.listen_addr,
             username: settings.username,
             password: settings.password,
+            control_socket: None,
         }
     }
 }
