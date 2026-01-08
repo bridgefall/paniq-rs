@@ -58,7 +58,8 @@ impl KcpTelemetry {
     }
 
     fn should_log(&self) -> bool {
-        self.last_log.elapsed() >= telemetry::TELEMETRY_INTERVAL
+        let interval = telemetry::log_interval().unwrap_or(std::time::Duration::from_secs(1));
+        self.last_log.elapsed() >= interval
     }
 
     fn log_and_reset(&mut self, kcp: &kcp::Kcp) {

@@ -3,7 +3,6 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 pub(crate) const TELEMETRY_ENV: &str = "PANIQ_KCP_TELEMETRY";
-pub(crate) const TELEMETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 static UDP_BYTES_IN: AtomicU64 = AtomicU64::new(0);
 static UDP_BYTES_OUT: AtomicU64 = AtomicU64::new(0);
@@ -73,19 +72,33 @@ impl TransportSnapshot {
     }
 }
 
-/// Returns true if background telemetry logs should be emitted to stdout.
-/// Regulated by PANIQ_KCP_TELEMETRY (default: false).
-pub(crate) fn logs_enabled() -> bool {
-    static LOGS_ENABLED: OnceLock<bool> = OnceLock::new();
-    *LOGS_ENABLED.get_or_init(|| {
-        std::env::var(TELEMETRY_ENV)
-            .ok()
-            .map(|value| match value.to_ascii_lowercase().as_str() {
-                "1" | "true" | "yes" | "on" => true,
-                _ => false,
-            })
-            .unwrap_or(false)
+/// Returns the telemetry logging interval if background logs should be emitted.
+/// Regulated by PANIQ_KCP_TELEMETRY (default: None/off).
+/// If set to a non-zero integer, that integer is used as the interval in seconds.
+pub(crate) fn log_interval() -> Option<Duration> {
+    static LOG_INTERVAL: OnceLock<Option<Duration>> = OnceLock::new();
+    *LOG_INTERVAL.get_or_init(|| {
+        let val = std::env::var(TELEMETRY_ENV).ok()?;
+        match val.to_ascii_lowercase().as_str() {
+            "true" | "yes" | "on" | "1" => Some(Duration::from_secs(1)),
+            "false" | "no" | "off" | "0" => None,
+            other => {
+                if let Ok(secs) = other.parse::<u64>() {
+                    if secs > 0 {
+                        Some(Duration::from_secs(secs))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        }
     })
+}
+
+pub(crate) fn logs_enabled() -> bool {
+    log_interval().is_some()
 }
 
 pub(crate) fn record_udp_in(bytes: usize) {

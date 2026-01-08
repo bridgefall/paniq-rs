@@ -85,7 +85,8 @@ impl KcpTelemetry {
     }
 
     fn should_log(&self) -> bool {
-        self.last_log.elapsed() >= telemetry::TELEMETRY_INTERVAL
+        let interval = telemetry::log_interval().unwrap_or(std::time::Duration::from_secs(1));
+        self.last_log.elapsed() >= interval
     }
 
     fn log_and_reset(&mut self, conv_id: u32, stats: &KcpStats) {
@@ -363,15 +364,17 @@ fn start_transport_logger() {
     }
 
     tokio::spawn(async move {
+        let interval_duration =
+            telemetry::log_interval().unwrap_or(std::time::Duration::from_secs(1));
         let mut last = telemetry::transport_snapshot();
-        let mut interval = tokio::time::interval(telemetry::TELEMETRY_INTERVAL);
+        let mut interval = tokio::time::interval(interval_duration);
         loop {
             interval.tick().await;
             let current = telemetry::transport_snapshot();
             let delta = current.delta(last);
             last = current;
 
-            let secs = telemetry::TELEMETRY_INTERVAL.as_secs_f64();
+            let secs = interval_duration.as_secs_f64();
             let payload_out_bps = delta.transport_payload_out_bytes as f64 / secs;
             let payload_in_bps = delta.transport_payload_in_bytes as f64 / secs;
             let udp_out_bps = delta.udp_out_bytes as f64 / secs;
@@ -388,7 +391,7 @@ fn start_transport_logger() {
             };
 
             tracing::info!(
-                interval_ms = telemetry::TELEMETRY_INTERVAL.as_millis(),
+                interval_ms = interval_duration.as_millis(),
                 udp_in_bytes = delta.udp_in_bytes,
                 udp_out_bytes = delta.udp_out_bytes,
                 transport_payload_in_bytes = delta.transport_payload_in_bytes,
