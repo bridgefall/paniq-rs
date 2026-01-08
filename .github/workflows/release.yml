@@ -1,0 +1,108 @@
+name: release
+
+on:
+  workflow_run:
+    workflows: ["ci"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-linux:
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binaries
+        run: |
+          cargo build --release --features "kcp,socks5"
+
+      - name: Prepare release artifacts
+        run: |
+          mkdir -p dist
+          cp target/release/proxy-server dist/paniq-rs-proxy
+          cp target/release/socks5d dist/paniq-rs-socks5d
+          cp target/release/paniq-ctl dist/paniq-rs-ctl
+          cp scripts/install-debian.sh dist/
+          chmod +x dist/paniq-rs-proxy dist/paniq-rs-socks5d dist/paniq-rs-ctl dist/install-debian.sh
+
+          # Create checksums
+          cd dist
+          sha256sum * > SHA256SUMS
+
+      - name: Release metadata
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(date -u +'%Y%m%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release archive
+        run: |
+          cd dist
+          tar czf paniq-rs-${{ steps.meta.outputs.tag }}-linux-amd64.tar.gz \
+            paniq-rs-proxy paniq-rs-socks5d paniq-rs-ctl install-debian.sh SHA256SUMS
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: paniq-rs-linux-amd64
+          path: dist/paniq-rs-${{ steps.meta.outputs.tag }}-linux-amd64.tar.gz
+          retention-days: 90
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          files: |
+            dist/paniq-rs-proxy
+            dist/paniq-rs-socks5d
+            dist/paniq-rs-ctl
+            dist/install-debian.sh
+            dist/SHA256SUMS
+            dist/paniq-rs-${{ steps.meta.outputs.tag }}-linux-amd64.tar.gz
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
