@@ -62,7 +62,12 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
     // Enable logging (ok if already initialized)
     let telemetry_enabled = std::env::var("PANIQ_KCP_TELEMETRY")
         .ok()
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
     if telemetry_enabled {
         let filter = tracing_subscriber::EnvFilter::builder()
@@ -77,9 +82,12 @@ async fn socks5_over_kcp_roundtrip() -> Duration {
     let (http_addr, http_handle) = start_http_server().await;
 
     // Spawn production proxy and SOCKS5 servers using the test harness
-    let harness = StackHarness::spawn("127.0.0.1:0".parse().unwrap(), "127.0.0.1:0".parse().unwrap())
-        .await
-        .expect("Failed to spawn test harness");
+    let harness = StackHarness::spawn(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .expect("Failed to spawn test harness");
 
     // Give servers time to start
     tokio::time::sleep(Duration::from_millis(SERVER_STARTUP_DELAY_MS)).await;
@@ -210,9 +218,12 @@ async fn soak_socks5_over_kcp_30s() {
     let (http_addr, http_handle) = start_http_server().await;
 
     // Spawn production servers using the test harness
-    let harness = StackHarness::spawn("127.0.0.1:0".parse().unwrap(), "127.0.0.1:0".parse().unwrap())
-        .await
-        .expect("Failed to spawn test harness");
+    let harness = StackHarness::spawn(
+        "127.0.0.1:0".parse().unwrap(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .expect("Failed to spawn test harness");
 
     // Give servers time to start
     tokio::time::sleep(Duration::from_millis(SERVER_STARTUP_DELAY_MS)).await;

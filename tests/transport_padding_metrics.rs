@@ -42,18 +42,11 @@ fn transport_padding_produces_size_variance() {
     let mut saw_padding = false;
 
     for _ in 0..SAMPLE_COUNT {
-        let transport = build_transport_payload(
-            &payload,
-            None,
-            &padding,
-            max_payload,
-            &mut padding_rng,
-        )
-        .unwrap();
+        let transport =
+            build_transport_payload(&payload, None, &padding, max_payload, &mut padding_rng)
+                .unwrap();
 
-        let pad_len = transport
-            .len()
-            .saturating_sub(overhead + payload_len);
+        let pad_len = transport.len().saturating_sub(overhead + payload_len);
         if pad_len > 0 {
             saw_padding = true;
         }
@@ -66,7 +59,10 @@ fn transport_padding_produces_size_variance() {
         *distribution.entry(size).or_default() += 1;
     }
 
-    println!("transport padding size distribution (count={}):", SAMPLE_COUNT);
+    println!(
+        "transport padding size distribution (count={}):",
+        SAMPLE_COUNT
+    );
     for (size, count) in &distribution {
         let pct = (*count as f64 / SAMPLE_COUNT as f64) * 100.0;
         println!("  size={} count={} pct={:.2}", size, count, pct);

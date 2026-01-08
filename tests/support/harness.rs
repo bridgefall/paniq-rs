@@ -88,9 +88,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_harness_spawn() {
-        let harness = StackHarness::spawn("127.0.0.1:0".parse().unwrap(), "127.0.0.1:0".parse().unwrap())
-            .await
-            .expect("Failed to spawn harness");
+        let harness = StackHarness::spawn(
+            "127.0.0.1:0".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await
+        .expect("Failed to spawn harness");
 
         // Verify addresses are assigned
         assert_ne!(harness.proxy.addr.port(), 0);

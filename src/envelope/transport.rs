@@ -23,7 +23,8 @@ pub fn build_transport_payload<R: RngCore>(
         return Err(EnvelopeError::PayloadTooLarge);
     }
     let pad_len = padding.padding_len(payload.len(), max_payload, rng);
-    if payload.len() + pad_len + LEN_SIZE + counter.map(|_| COUNTER_SIZE).unwrap_or(0) > max_payload {
+    if payload.len() + pad_len + LEN_SIZE + counter.map(|_| COUNTER_SIZE).unwrap_or(0) > max_payload
+    {
         telemetry::record_transport_payload_too_large();
         return Err(EnvelopeError::PayloadTooLarge);
     }
