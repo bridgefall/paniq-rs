@@ -169,14 +169,46 @@ struct MessageVisitor<'a> {
 }
 
 impl<'a> tracing::field::Visit for MessageVisitor<'a> {
-    fn record_debug(&mut self, _field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        use std::fmt::Write;
-        write!(self.message, "{:?}", value).ok();
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            use std::fmt::Write;
+            write!(self.message, "{:?}", value).ok();
+        } else {
+            self.message
+                .push_str(&format!(" {}={:?}", field.name(), value));
+        }
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
         if field.name() == "message" {
             self.message.push_str(value);
+        } else {
+            self.message
+                .push_str(&format!(" {}={}", field.name(), value));
+        }
+    }
+
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        if field.name() == "message" {
+            self.message.push_str(&value.to_string());
+        } else {
+            self.message
+                .push_str(&format!(" {}={}", field.name(), value));
+        }
+    }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "message" {
+            self.message.push_str(&value.to_string());
+        } else {
+            self.message
+                .push_str(&format!(" {}={}", field.name(), value));
+        }
+    }
+
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        if field.name() == "message" {
+            self.message.push_str(&value.to_string());
         } else {
             self.message
                 .push_str(&format!(" {}={}", field.name(), value));
