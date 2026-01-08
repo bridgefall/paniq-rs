@@ -1,14 +1,13 @@
-FROM debian:bookworm-slim
+FROM rust:1.92-slim-bookworm
 
-RUN apt-get update && apt-get install -y make sudo curl
-
-# Install Rust via rustup (Debian's cargo is too old for Cargo.lock v4)
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
+RUN apt-get update && apt-get install -y make sudo
 
 # Mock systemctl to avoid failure in Docker
 RUN echo '#!/bin/bash\necho "Mocked systemctl: $*"' > /usr/local/bin/systemctl && \
     chmod +x /usr/local/bin/systemctl
+
+# Set PATH for rustup (installed by make install-deps-debian)
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 WORKDIR /build
 COPY . .

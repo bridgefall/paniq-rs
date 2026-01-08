@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# CI/CD
+.github
+
+# Build artifacts (rebuild inside container)
+target
+**/*.rs.bc
+**/*.rmeta
+
+# Docker
+Dockerfile*
+*.dockerfile
+.dockerignore
+
+# Tests and testing
+tests
+e2e-logs
+fuzz
+obf-parity
+
+# Documentation
+README.md
+docs
+!docs/examples
+
+# Development tools
+.claude
+*.swp
+*.swo
+*~
+
+# Examples (not needed for build)
+examples
+
+# OS files
+.DS_Store
+Thumbs.db
