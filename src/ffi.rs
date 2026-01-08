@@ -30,6 +30,22 @@ pub fn decode_profile_to_json(base64_cbor: String) -> Result<String, PaniqError>
     })
 }
 
+#[uniffi::export]
+pub fn encode_profile_to_cbor(json_profile: String) -> Result<String, PaniqError> {
+    let profile: Profile =
+        serde_json::from_str(&json_profile).map_err(|e| PaniqError::DaemonError {
+            err_msg: format!("JSON decode error: {}", e),
+        })?;
+
+    let raw = crate::profile::cbor::encode_compact_profile(&profile).map_err(|e| {
+        PaniqError::DaemonError {
+            err_msg: format!("CBOR encode error: {}", e),
+        }
+    })?;
+
+    Ok(base64::engine::general_purpose::STANDARD.encode(raw))
+}
+
 /// Configuration for starting the daemon (simplified version for UniFFI).
 #[derive(uniffi::Record)]
 pub struct DaemonStartConfig {
