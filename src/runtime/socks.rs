@@ -78,8 +78,8 @@ impl SocksHandle {
         };
         let relay_buffer_size = client_config.max_payload;
 
-        let client = PaniqClient::new(server_addr, obf_config, client_config);
-        let connector = PaniqConnector::new(client);
+        let client = Arc::new(PaniqClient::new(server_addr, obf_config, client_config));
+        let connector = PaniqConnector::new(client.clone());
 
         let auth = config
             .auth
@@ -107,6 +107,8 @@ impl SocksHandle {
                     tokio::select! {
                         _ = shutdown.cancelled() => {
                             info!("SOCKS5 server shutdown requested");
+                            // Explicitly close the client to release the UDP socket
+                            client.close().await;
                             break;
                         }
                         result = listener.accept() => {
@@ -158,11 +160,11 @@ impl Drop for SocksHandle {
 }
 
 struct PaniqConnector {
-    client: PaniqClient,
+    client: Arc<PaniqClient>,
 }
 
 impl PaniqConnector {
-    fn new(client: PaniqClient) -> Self {
+    fn new(client: Arc<PaniqClient>) -> Self {
         Self { client }
     }
 }
