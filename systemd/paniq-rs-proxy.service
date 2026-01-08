@@ -1,0 +1,14 @@
+[Unit]
+Description=Bridgefall Proxy Server (Rust)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/paniq-rs-proxy --config /etc/bridgefall-rs/paniq-rs-proxy.json --profile /etc/bridgefall-rs/profile.json
+Restart=on-failure
+RestartSec=2s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

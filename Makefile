@@ -225,6 +225,10 @@ help:
 	@echo "  make clippy && make test-all"
 	@echo "  make fmt-check && make check"
 	@echo ""
+	@echo "$(COLOR_GREEN)Installation (Debian):$(COLOR_RESET)"
+	@echo "  make install-debian      - Full installation on Debian (requires sudo)"
+	@echo "  make uninstall-debian    - Full uninstallation on Debian (requires sudo)"
+	@echo ""
 
 ## ============================================================================
 ## Installation Targets
@@ -239,6 +243,68 @@ install: build-release
 install-debug: build
 	@echo "$(COLOR_BLUE)Installing debug binaries...$(COLOR_RESET)"
 	$(CARGO) install --path . $(FEATURES_FULL)
+
+## ============================================================================
+## Debian Installation
+## ============================================================================
+
+.PHONY: install-deps-debian
+install-deps-debian:
+	@echo "$(COLOR_BLUE)Installing dependencies...$(COLOR_RESET)"
+	@set -e; \
+	apt-get update; \
+	apt-get install -y curl jq build-essential pkg-config libssl-dev
+
+.PHONY: gen-profile
+gen-profile:
+	@echo "$(COLOR_BLUE)Generating profile...$(COLOR_RESET)"
+	@set -e; \
+	IP=$$(curl -s https://ifconfig.me); \
+	if [ -z "$$IP" ]; then \
+		echo "failed to fetch public ip" >&2; \
+		exit 1; \
+	fi; \
+	$(TARGET_RELEASE)/paniq-ctl create-profile --mtu 1420 --proxy-addr "$$IP:9001" > profile.json
+
+.PHONY: install-proxy-systemd
+install-proxy-systemd: gen-profile
+	@echo "$(COLOR_BLUE)Installing paniq-rs-proxy systemd unit + default configs...$(COLOR_RESET)"
+	@set -e; \
+	if [ "$$(id -u)" -ne 0 ]; then \
+		echo "run as root (e.g. sudo make install-proxy-systemd)" >&2; \
+		exit 1; \
+	fi; \
+	install -d /etc/bridgefall-rs; \
+	install -m 0644 docs/examples/paniq-rs-proxy.json /etc/bridgefall-rs/paniq-rs-proxy.json; \
+	install -m 0644 profile.json /etc/bridgefall-rs/profile.json; \
+	install -m 0644 systemd/paniq-rs-proxy.service /etc/systemd/system/paniq-rs-proxy.service; \
+	install -m 0755 $(TARGET_RELEASE)/proxy-server /usr/local/bin/paniq-rs-proxy; \
+	install -m 0755 $(TARGET_RELEASE)/paniq-ctl /usr/local/bin/paniq-rs-ctl; \
+	$(TARGET_RELEASE)/paniq-ctl profile-cbor -base64 < /etc/bridgefall-rs/profile.json > /etc/bridgefall-rs/client.txt; \
+	chmod 644 /etc/bridgefall-rs/client.txt; \
+	systemctl daemon-reload; \
+	systemctl enable --now paniq-rs-proxy.service; \
+	echo "==> paniq-rs-proxy enabled and started"; \
+	echo "==> client connection string saved to /etc/bridgefall-rs/client.txt"
+
+.PHONY: install-debian
+install-debian: install-deps-debian build-release install-proxy-systemd
+
+.PHONY: uninstall-debian
+uninstall-debian:
+	@echo "$(COLOR_BLUE)Uninstalling paniq-rs-proxy systemd unit + configs...$(COLOR_RESET)"
+	@set -e; \
+	if [ "$$(id -u)" -ne 0 ]; then \
+		echo "run as root (e.g. sudo make uninstall-debian)" >&2; \
+		exit 1; \
+	fi; \
+	systemctl disable --now paniq-rs-proxy.service || true; \
+	rm -f /etc/systemd/system/paniq-rs-proxy.service; \
+	rm -f /usr/local/bin/paniq-rs-proxy; \
+	rm -f /usr/local/bin/paniq-rs-ctl; \
+	rm -rf /etc/bridgefall-rs; \
+	systemctl daemon-reload; \
+	echo "==> paniq-rs-proxy disabled and removed"
 
 ## ============================================================================
 ## Feature-Specific Builds
