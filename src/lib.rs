@@ -16,7 +16,7 @@ pub mod kcp;
 #[cfg(feature = "socks5")]
 pub mod socks5;
 
-#[cfg(feature = "socks5")]
+#[cfg(feature = "tokio")]
 pub mod control;
 
 #[cfg(feature = "mobile")]
