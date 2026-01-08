@@ -5,6 +5,7 @@ use crate::runtime::{SocksConfig, SocksHandle};
 use base64::Engine;
 use once_cell::sync::Lazy;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing_subscriber::layer::SubscriberExt;
@@ -134,9 +135,35 @@ impl From<tracing::Level> for LogLevel {
     }
 }
 
+static LOG_LEVEL: AtomicU8 = AtomicU8::new(3); // Default to INFO (3)
+
+fn tracing_level_to_u8(level: &tracing::Level) -> u8 {
+    if level == &tracing::Level::ERROR {
+        1
+    } else if level == &tracing::Level::WARN {
+        2
+    } else if level == &tracing::Level::INFO {
+        3
+    } else if level == &tracing::Level::DEBUG {
+        4
+    } else {
+        5
+    } // TRACE
+}
+
 struct PaniqLogger {
     handler: Box<dyn PaniqLogHandler>,
-    min_level: tracing::Level,
+}
+
+#[uniffi::export]
+pub fn set_log_level(level: LogLevel) {
+    let u8_level = match level {
+        LogLevel::Error => 1,
+        LogLevel::Warn => 2,
+        LogLevel::Info => 3,
+        LogLevel::Debug => 4,
+    };
+    LOG_LEVEL.store(u8_level, Ordering::Relaxed);
 }
 
 impl<S> tracing_subscriber::Layer<S> for PaniqLogger
@@ -149,7 +176,7 @@ where
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
         // Filter events by level
-        if *event.metadata().level() > self.min_level {
+        if tracing_level_to_u8(event.metadata().level()) > LOG_LEVEL.load(Ordering::Relaxed) {
             return;
         }
 
@@ -218,13 +245,8 @@ impl<'a> tracing::field::Visit for MessageVisitor<'a> {
 
 #[uniffi::export]
 pub fn setup_logging(handler: Box<dyn PaniqLogHandler>, level: LogLevel) {
-    let min_level = match level {
-        LogLevel::Error => tracing::Level::ERROR,
-        LogLevel::Warn => tracing::Level::WARN,
-        LogLevel::Info => tracing::Level::INFO,
-        LogLevel::Debug => tracing::Level::DEBUG,
-    };
-    let logger = PaniqLogger { handler, min_level };
+    set_log_level(level);
+    let logger = PaniqLogger { handler };
     let _ = tracing_subscriber::registry().with(logger).try_init();
 }
 
@@ -363,4 +385,32 @@ pub fn save_daemon_config(path: String, settings: DaemonSettings) -> Result<(), 
 #[uniffi::export]
 pub fn get_default_daemon_settings() -> DaemonSettings {
     Config::default().into()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_log_level_mapping() {
+        assert_eq!(tracing_level_to_u8(&tracing::Level::ERROR), 1);
+        assert_eq!(tracing_level_to_u8(&tracing::Level::WARN), 2);
+        assert_eq!(tracing_level_to_u8(&tracing::Level::INFO), 3);
+        assert_eq!(tracing_level_to_u8(&tracing::Level::DEBUG), 4);
+        assert_eq!(tracing_level_to_u8(&tracing::Level::TRACE), 5);
+    }
+
+    #[test]
+    fn test_set_log_level() {
+        set_log_level(LogLevel::Error);
+        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), 1);
+
+        set_log_level(LogLevel::Warn);
+        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), 2);
+
+        set_log_level(LogLevel::Info);
+        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), 3);
+
+        set_log_level(LogLevel::Debug);
+        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), 4);
+    }
 }
