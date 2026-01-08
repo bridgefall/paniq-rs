@@ -134,20 +134,102 @@ let json = decode_profile_to_json(b64_cbor_string)?;
 ```
 For a complete demonstration, see [`examples/ffi_usage.rs`](examples/ffi_usage.rs).
 
-## Getting Started
+## Installation
 
-### Prerequisites
-*   Rust (1.75+ recommended)
+### Quick Install (Recommended)
+
+Install the latest version of paniq-rs on Debian-based systems with a single command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bridgefall/paniq-rs/main/scripts/paniq-rs-install.sh | sudo bash
+```
+
+**What it does:**
+- ✅ Detects and installs the latest release automatically
+- ✅ Downloads binaries from GitHub releases
+- ✅ Verifies checksums for security
+- ✅ Installs to `/usr/local/bin`
+- ✅ Generates server profile and client connection string
+- ✅ Creates and starts systemd service
+- ✅ Sets up configuration at `/etc/bridgefall-rs`
+
+**Install a specific version:**
+```bash
+export PANIQ_VERSION=v20260108-abc1234
+curl -fsSL https://raw.githubusercontent.com/bridgefall/paniq-rs/main/scripts/paniq-rs-install.sh | sudo bash
+```
+
+### Manual Installation
+
+If you prefer to install manually or build from source:
+
+#### From Release Binaries
+
+```bash
+# Download the latest release
+wget https://github.com/bridgefall/paniq-rs/releases/latest/download/paniq-rs-VERSION-linux-amd64.tar.gz
+tar -xzf paniq-rs-VERSION-linux-amd64.tar.gz
+cd paniq-rs-VERSION-linux-amd64
+
+# Run the installer
+sudo bash install-debian.sh
+```
+
+#### Build from Source
+
+**Prerequisites:**
+*   Rust 1.75+ (recommended: latest stable)
 *   `make` (for convenience commands)
 
-### Building
 ```bash
+# Clone the repository
+git clone https://github.com/bridgefall/paniq-rs.git
+cd paniq-rs
+
 # Build release binaries (recommended for performance)
 make build-release
 
 # Install to cargo bin directory
 make install
 ```
+
+### Post-Installation
+
+After installation, the service will be running automatically. You can manage it with:
+
+```bash
+# Check service status
+sudo systemctl status paniq-rs-proxy
+
+# View logs
+sudo journalctl -u paniq-rs-proxy -f
+
+# Restart service
+sudo systemctl restart paniq-rs-proxy
+
+# Stop service
+sudo systemctl stop paniq-rs-proxy
+```
+
+**Get client connection string:**
+```bash
+cat /etc/bridgefall-rs/client.txt
+```
+
+This string can be shared with clients to connect to your proxy server.
+
+### Uninstall
+
+```bash
+sudo systemctl stop paniq-rs-proxy
+sudo systemctl disable paniq-rs-proxy
+sudo rm /usr/local/bin/paniq-rs-*
+sudo rm /etc/systemd/system/paniq-rs-proxy.service
+sudo rm -rf /etc/bridgefall-rs
+sudo systemctl daemon-reload
+```
+
+## Getting Started
 
 ### Running
 Both components require a **Profile** (`.json`). You can generate a test set using the included tools:
