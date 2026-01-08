@@ -135,20 +135,26 @@ impl From<tracing::Level> for LogLevel {
     }
 }
 
-static LOG_LEVEL: AtomicU8 = AtomicU8::new(3); // Default to INFO (3)
+const LOG_LEVEL_ERROR: u8 = 1;
+const LOG_LEVEL_WARN: u8 = 2;
+const LOG_LEVEL_INFO: u8 = 3;
+const LOG_LEVEL_DEBUG: u8 = 4;
+const LOG_LEVEL_TRACE: u8 = 5;
+
+static LOG_LEVEL: AtomicU8 = AtomicU8::new(LOG_LEVEL_INFO);
 
 fn tracing_level_to_u8(level: &tracing::Level) -> u8 {
     if level == &tracing::Level::ERROR {
-        1
+        LOG_LEVEL_ERROR
     } else if level == &tracing::Level::WARN {
-        2
+        LOG_LEVEL_WARN
     } else if level == &tracing::Level::INFO {
-        3
+        LOG_LEVEL_INFO
     } else if level == &tracing::Level::DEBUG {
-        4
+        LOG_LEVEL_DEBUG
     } else {
-        5
-    } // TRACE
+        LOG_LEVEL_TRACE
+    }
 }
 
 struct PaniqLogger {
@@ -158,10 +164,10 @@ struct PaniqLogger {
 #[uniffi::export]
 pub fn set_log_level(level: LogLevel) {
     let u8_level = match level {
-        LogLevel::Error => 1,
-        LogLevel::Warn => 2,
-        LogLevel::Info => 3,
-        LogLevel::Debug => 4,
+        LogLevel::Error => LOG_LEVEL_ERROR,
+        LogLevel::Warn => LOG_LEVEL_WARN,
+        LogLevel::Info => LOG_LEVEL_INFO,
+        LogLevel::Debug => LOG_LEVEL_DEBUG,
     };
     LOG_LEVEL.store(u8_level, Ordering::Relaxed);
 }
@@ -389,28 +395,29 @@ pub fn get_default_daemon_settings() -> DaemonSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn test_log_level_mapping() {
-        assert_eq!(tracing_level_to_u8(&tracing::Level::ERROR), 1);
-        assert_eq!(tracing_level_to_u8(&tracing::Level::WARN), 2);
-        assert_eq!(tracing_level_to_u8(&tracing::Level::INFO), 3);
-        assert_eq!(tracing_level_to_u8(&tracing::Level::DEBUG), 4);
-        assert_eq!(tracing_level_to_u8(&tracing::Level::TRACE), 5);
+        assert_eq!(tracing_level_to_u8(&tracing::Level::ERROR), LOG_LEVEL_ERROR);
+        assert_eq!(tracing_level_to_u8(&tracing::Level::WARN), LOG_LEVEL_WARN);
+        assert_eq!(tracing_level_to_u8(&tracing::Level::INFO), LOG_LEVEL_INFO);
+        assert_eq!(tracing_level_to_u8(&tracing::Level::DEBUG), LOG_LEVEL_DEBUG);
+        assert_eq!(tracing_level_to_u8(&tracing::Level::TRACE), LOG_LEVEL_TRACE);
     }
 
     #[test]
     fn test_set_log_level() {
         set_log_level(LogLevel::Error);
-        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), 1);
+        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), LOG_LEVEL_ERROR);
 
         set_log_level(LogLevel::Warn);
-        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), 2);
+        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), LOG_LEVEL_WARN);
 
         set_log_level(LogLevel::Info);
-        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), 3);
+        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), LOG_LEVEL_INFO);
 
         set_log_level(LogLevel::Debug);
-        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), 4);
+        assert_eq!(LOG_LEVEL.load(Ordering::Relaxed), LOG_LEVEL_DEBUG);
     }
 }
