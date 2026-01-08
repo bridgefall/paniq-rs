@@ -38,4 +38,15 @@ if ! cargo fmt -- --check; then
 fi
 
 echo "✅ Code formatting check passed!"
+
+# Run cargo clippy in check mode
+if ! cargo clippy --all-features -- -D warnings; then
+    echo ""
+    echo "❌ Clippy check failed!"
+    echo "Please run 'cargo clippy --all-features -- -D warnings' to fix any clippy warnings before pushing."
+    echo ""
+    echo "To bypass this hook (not recommended), use: git push --no-verify"
+    exit 1
+fi
+
 exit 0
