@@ -1,5 +1,8 @@
 # paniq-rs
 
+[![CI](https://github.com/bridgefall/paniq-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/bridgefall/paniq-rs/actions/workflows/ci.yml)
+[![Release](https://github.com/bridgefall/paniq-rs/actions/workflows/release.yml/badge.svg)](https://github.com/bridgefall/paniq-rs/actions/workflows/release.yml)
+
 `paniq-rs` is the high-performance Rust implementation of the **Paniq** transport protocol, a core component of the **Bridgefall** censorship-resilient connectivity substrate. It provides a robust, obfuscated, and adaptable networking layer designed to survive in high-censorship environments by mimicking innocuous UDP traffic.
 
 ## Project Overview
