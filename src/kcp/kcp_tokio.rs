@@ -223,7 +223,7 @@ fn compute_bdp_window(mtu: u32, target_bps: u64, rtt_ms: u64) -> Option<u32> {
         .saturating_mul(rtt_ms as u128)
         .saturating_add((MILLIS_PER_SEC - 1) as u128)
         / MILLIS_PER_SEC as u128;
-    let window = (inflight_bytes + mss as u128 - 1) / mss as u128;
+    let window = inflight_bytes.div_ceil(mss as u128);
     let window = window.clamp(MIN_KCP_WINDOW as u128, u32::MAX as u128) as u32;
     Some(window)
 }
@@ -264,6 +264,7 @@ fn coalesce_write_batch(
     buf.freeze()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_kcp_windows(
     max_packet_size: usize,
     max_payload: usize,
@@ -576,8 +577,6 @@ impl KcpServer {
         tokio::task::yield_now().await;
 
         loop {
-            if iter_count < 5 {}
-
             // Send ready signal on first iteration
             if iter_count == 0 {
                 if let Some(tx) = self.ready_tx.lock().await.take() {
@@ -812,7 +811,7 @@ impl KcpServer {
 
         // Feed the packet to the KCP engine via input_tx
         session.last_seen = tokio::time::Instant::now();
-        if let Err(_) = session.input_tx.send(Bytes::from(kcp_bytes)).await {
+        if (session.input_tx.send(Bytes::from(kcp_bytes)).await).is_err() {
             warn!("Failed to send data to KCP engine - channel closed");
         }
     }
@@ -842,6 +841,7 @@ impl KcpServer {
 }
 
 /// Run the KCP engine for server-side connection.
+#[allow(clippy::too_many_arguments)]
 async fn run_kcp_engine_server(
     conv_id: u32,
     kcp_config: KcpConfig,
@@ -1310,8 +1310,8 @@ impl KcpClient {
                                         // Send to KCP engine via input_tx
                                         let session_guard = session.lock().await;
                                         if let Some(ref session) = *session_guard {
-                                            if let Err(_) =
-                                                session.input_tx.send(Bytes::from(kcp_bytes)).await
+                                            if (session.input_tx.send(Bytes::from(kcp_bytes)).await)
+                                                .is_err()
                                             {
                                                 tracing::warn!(
                                                     "Failed to send to KCP engine - channel closed"
@@ -1467,6 +1467,7 @@ mod tests {
 }
 
 /// Run the KCP engine for client-side connection.
+#[allow(clippy::too_many_arguments)]
 async fn run_kcp_engine_client(
     conv_id: u32,
     kcp_config: KcpConfig,

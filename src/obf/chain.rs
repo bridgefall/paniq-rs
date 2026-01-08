@@ -120,7 +120,7 @@ fn builders(rng: SharedRng) -> HashMap<&'static str, Builder> {
     );
     map.insert(
         "t",
-        Box::new(|_val: &str| Ok(Box::new(TimestampObf::default()) as Box<dyn Obf>)),
+        Box::new(|_val: &str| Ok(Box::new(TimestampObf) as Box<dyn Obf>)),
     );
     map.insert(
         "r",
@@ -157,11 +157,11 @@ fn builders(rng: SharedRng) -> HashMap<&'static str, Builder> {
     );
     map.insert(
         "d",
-        Box::new(|_val: &str| Ok(Box::new(DataObf::default()) as Box<dyn Obf>)),
+        Box::new(|_val: &str| Ok(Box::new(DataObf) as Box<dyn Obf>)),
     );
     map.insert(
         "ds",
-        Box::new(|_val: &str| Ok(Box::new(DataStringObf::default()) as Box<dyn Obf>)),
+        Box::new(|_val: &str| Ok(Box::new(DataStringObf) as Box<dyn Obf>)),
     );
     map.insert(
         "dz",

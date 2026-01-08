@@ -229,8 +229,6 @@ impl KcpServer {
 
         // Send ready signal AFTER we've entered the loop
         loop {
-            if iter_count < 5 {}
-
             // Send ready signal on first iteration
             if iter_count == 0 {
                 if let Some(tx) = self.ready_tx.lock().await.take() {
@@ -286,8 +284,6 @@ impl KcpServer {
 
                 // Periodic KCP update and cleanup
                 _ = update_interval.tick() => {
-                    if iter_count <= 5 {
-                    }
                     self.update_sessions().await;
                 }
             }
@@ -390,7 +386,7 @@ impl KcpServer {
             .insert((peer_addr, conv_id), session);
 
         // NOW send Response - session is ready to receive data
-        let response_payload = (conv_id as u32).to_be_bytes().to_vec();
+        let response_payload = conv_id.to_be_bytes().to_vec();
         let response = self
             .framer
             .encode_frame(MessageType::Response, &response_payload)?;
@@ -449,7 +445,7 @@ impl KcpServer {
 
         // Feed the packet to the KCP pump via input_tx
         session.last_seen = tokio::time::Instant::now();
-        if let Err(_) = session.input_tx.send(kcp_bytes).await {
+        if (session.input_tx.send(kcp_bytes).await).is_err() {
             warn!("Failed to send data to KCP pump - channel closed");
         }
     }
@@ -833,7 +829,7 @@ impl KcpClient {
                                 // Send to KCP pump via input_tx
                                 let session_guard = session.lock().await;
                                 if let Some(ref session) = *session_guard {
-                                    if let Err(_) = session.input_tx.send(kcp_bytes).await {
+                                    if (session.input_tx.send(kcp_bytes).await).is_err() {
                                         tracing::warn!(
                                             "Failed to send to KCP pump - channel closed"
                                         );

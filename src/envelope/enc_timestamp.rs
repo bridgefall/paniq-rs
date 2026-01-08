@@ -17,7 +17,7 @@ pub struct EncodedTimestamp {
 
 fn serialize_timestamp(ts: SystemTime) -> [u8; 12] {
     let since = ts.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let seconds = (since.as_secs() + 0x4000_0000_0000_0000) as u64; // TAI64 offset approximation
+    let seconds = since.as_secs() + 0x4000_0000_0000_0000; // TAI64 offset approximation
     let nanos = since.subsec_nanos();
     let mut out = [0u8; 12];
     out[..8].copy_from_slice(&seconds.to_be_bytes());

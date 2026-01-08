@@ -572,17 +572,17 @@ pub mod serde_duration {
 
     fn parse_duration_str(s: &str) -> Option<Duration> {
         let s = s.trim();
-        if s.ends_with('s') {
-            let num = s[..s.len() - 1].parse::<u64>().ok()?;
+        if let Some(num_str) = s.strip_suffix('s') {
+            let num = num_str.parse::<u64>().ok()?;
             Some(Duration::from_secs(num))
-        } else if s.ends_with('m') {
-            let num = s[..s.len() - 1].parse::<u64>().ok()?;
+        } else if let Some(num_str) = s.strip_suffix('m') {
+            let num = num_str.parse::<u64>().ok()?;
             Some(Duration::from_secs(num * 60))
-        } else if s.ends_with('h') {
-            let num = s[..s.len() - 1].parse::<u64>().ok()?;
+        } else if let Some(num_str) = s.strip_suffix('h') {
+            let num = num_str.parse::<u64>().ok()?;
             Some(Duration::from_secs(num * 3600))
-        } else if s.ends_with("ms") {
-            let num = s[..s.len() - 2].parse::<u64>().ok()?;
+        } else if let Some(num_str) = s.strip_suffix("ms") {
+            let num = num_str.parse::<u64>().ok()?;
             Some(Duration::from_millis(num))
         } else {
             // Try as plain seconds

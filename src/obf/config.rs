@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Config {
     pub jc: i32,
     pub jmin: i32,
@@ -66,28 +66,5 @@ impl Config {
             self.i4.clone(),
             self.i5.clone(),
         ]
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            jc: 0,
-            jmin: 0,
-            jmax: 0,
-            s1: 0,
-            s2: 0,
-            s3: 0,
-            s4: 0,
-            h1: String::new(),
-            h2: String::new(),
-            h3: String::new(),
-            h4: String::new(),
-            i1: String::new(),
-            i2: String::new(),
-            i3: String::new(),
-            i4: String::new(),
-            i5: String::new(),
-        }
     }
 }

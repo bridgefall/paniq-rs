@@ -144,6 +144,12 @@ pub fn record_connection_close() {
 /// RAII guard for tracking an active connection.
 pub struct ConnectionGuard;
 
+impl Default for ConnectionGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConnectionGuard {
     pub fn new() -> Self {
         record_connection_open();

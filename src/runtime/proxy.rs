@@ -264,7 +264,7 @@ async fn handle_stream(
         }
         Err(e) => {
             let _ = send.write_all(&[REPLY_GENERAL_FAILURE]).await;
-            return Err(e.into());
+            return Err(e);
         }
     };
 

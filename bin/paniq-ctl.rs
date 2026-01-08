@@ -90,10 +90,10 @@ async fn send_command(
     let response: ControlResponse = serde_json::from_slice(&buf)?;
 
     match &response {
-        ControlResponse::Error(e) => Err(Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("Server error: {}", e),
-        )) as Box<dyn std::error::Error>),
+        ControlResponse::Error(e) => Err(Box::new(std::io::Error::other(format!(
+            "Server error: {}",
+            e
+        ))) as Box<dyn std::error::Error>),
         _ => Ok(response),
     }
 }

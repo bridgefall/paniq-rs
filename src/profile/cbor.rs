@@ -406,207 +406,200 @@ pub fn decode_compact_profile(
         out.preamble_jitter_ms = Some(val);
     }
 
-    if let Some(v) = get_kv(KEY_QUIC) {
-        if let Value::Map(m) = v {
-            let get_qv = |k: u64| {
-                m.iter()
-                    .find(|(kv, _)| match kv {
-                        Value::Integer(ki) => {
-                            let i: i64 = (*ki).try_into().unwrap_or_default();
-                            i == k as i64
-                        }
-                        _ => false,
-                    })
-                    .map(|(_, v)| v)
-            };
+    if let Some(Value::Map(m)) = get_kv(KEY_QUIC) {
+        let get_qv = |k: u64| {
+            m.iter()
+                .find(|(kv, _)| match kv {
+                    Value::Integer(ki) => {
+                        let i: i64 = (*ki).try_into().unwrap_or_default();
+                        i == k as i64
+                    }
+                    _ => false,
+                })
+                .map(|(_, v)| v)
+        };
 
-            let mut q = crate::profile::KcpConfig {
-                max_packet_size: DEFAULT_QUIC_MAX_PACKET_SIZE,
-                max_payload: 1200, // standard default
-                keepalive: std::time::Duration::from_millis(DEFAULT_QUIC_KEEP_ALIVE_MS),
-                idle_timeout: std::time::Duration::from_millis(DEFAULT_QUIC_IDLE_TIMEOUT_MS),
-                max_streams: DEFAULT_QUIC_MAX_STREAMS,
-                ..Default::default()
-            };
+        let mut q = crate::profile::KcpConfig {
+            max_packet_size: DEFAULT_QUIC_MAX_PACKET_SIZE,
+            max_payload: 1200, // standard default
+            keepalive: std::time::Duration::from_millis(DEFAULT_QUIC_KEEP_ALIVE_MS),
+            idle_timeout: std::time::Duration::from_millis(DEFAULT_QUIC_IDLE_TIMEOUT_MS),
+            max_streams: DEFAULT_QUIC_MAX_STREAMS,
+            ..Default::default()
+        };
 
-            if let Some(sv) = get_qv(KEY_QUIC_MAX_PACKET_SIZE).and_then(|v| v.as_integer()) {
-                let val: u64 = sv.try_into().unwrap_or_default();
-                q.max_packet_size = val as usize;
-            }
-            if let Some(sv) = get_qv(KEY_QUIC_MAX_PAYLOAD).and_then(|v| v.as_integer()) {
-                let val: u64 = sv.try_into().unwrap_or_default();
-                q.max_payload = val as usize;
-            }
-            if let Some(sv) = get_qv(KEY_QUIC_KEEP_ALIVE).and_then(|v| v.as_integer()) {
-                let val: u64 = sv.try_into().unwrap_or_default();
-                q.keepalive = std::time::Duration::from_millis(val);
-            }
-            if let Some(sv) = get_qv(KEY_QUIC_IDLE_TIMEOUT).and_then(|v| v.as_integer()) {
-                let val: u64 = sv.try_into().unwrap_or_default();
-                q.idle_timeout = std::time::Duration::from_millis(val);
-            }
-            if let Some(sv) = get_qv(KEY_QUIC_MAX_STREAMS).and_then(|v| v.as_integer()) {
-                let val: u64 = sv.try_into().unwrap_or_default();
-                q.max_streams = val as usize;
-            }
-            out.kcp = Some(q);
+        if let Some(sv) = get_qv(KEY_QUIC_MAX_PACKET_SIZE).and_then(|v| v.as_integer()) {
+            let val: u64 = sv.try_into().unwrap_or_default();
+            q.max_packet_size = val as usize;
+        }
+        if let Some(sv) = get_qv(KEY_QUIC_MAX_PAYLOAD).and_then(|v| v.as_integer()) {
+            let val: u64 = sv.try_into().unwrap_or_default();
+            q.max_payload = val as usize;
+        }
+        if let Some(sv) = get_qv(KEY_QUIC_KEEP_ALIVE).and_then(|v| v.as_integer()) {
+            let val: u64 = sv.try_into().unwrap_or_default();
+            q.keepalive = std::time::Duration::from_millis(val);
+        }
+        if let Some(sv) = get_qv(KEY_QUIC_IDLE_TIMEOUT).and_then(|v| v.as_integer()) {
+            let val: u64 = sv.try_into().unwrap_or_default();
+            q.idle_timeout = std::time::Duration::from_millis(val);
+        }
+        if let Some(sv) = get_qv(KEY_QUIC_MAX_STREAMS).and_then(|v| v.as_integer()) {
+            let val: u64 = sv.try_into().unwrap_or_default();
+            q.max_streams = val as usize;
+        }
+        out.kcp = Some(q);
+    }
+
+    if let Some(Value::Map(m)) = get_kv(KEY_OBFUSCATION) {
+        let get_ov = |k: u64| {
+            m.iter()
+                .find(|(kv, _)| match kv {
+                    Value::Integer(ki) => {
+                        let i: i64 = (*ki).try_into().unwrap_or_default();
+                        i == k as i64
+                    }
+                    _ => false,
+                })
+                .map(|(_, v)| v)
+        };
+
+        let o = &mut out.obfuscation;
+        if let Some(sv) = get_ov(KEY_OBF_JC).and_then(|v| v.as_integer()) {
+            o.jc = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_JMIN).and_then(|v| v.as_integer()) {
+            o.jmin = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_JMAX).and_then(|v| v.as_integer()) {
+            o.jmax = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_S1).and_then(|v| v.as_integer()) {
+            o.s1 = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_S2).and_then(|v| v.as_integer()) {
+            o.s2 = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_S3).and_then(|v| v.as_integer()) {
+            o.s3 = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_S4).and_then(|v| v.as_integer()) {
+            o.s4 = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_H1).and_then(|v| v.as_text()) {
+            o.h1 = sv.to_string();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_H2).and_then(|v| v.as_text()) {
+            o.h2 = sv.to_string();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_H3).and_then(|v| v.as_text()) {
+            o.h3 = sv.to_string();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_H4).and_then(|v| v.as_text()) {
+            o.h4 = sv.to_string();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_I1).and_then(|v| v.as_text()) {
+            o.i1 = sv.to_string();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_I2).and_then(|v| v.as_text()) {
+            o.i2 = sv.to_string();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_I3).and_then(|v| v.as_text()) {
+            o.i3 = sv.to_string();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_I4).and_then(|v| v.as_text()) {
+            o.i4 = sv.to_string();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_I5).and_then(|v| v.as_text()) {
+            o.i5 = sv.to_string();
+        }
+
+        if let Some(sv) = get_ov(KEY_OBF_SERVER_PRIVATE_KEY).and_then(|v| v.as_bytes()) {
+            o.server_private_key = base64::engine::general_purpose::STANDARD.encode(sv);
+        }
+        if let Some(sv) = get_ov(KEY_OBF_SERVER_PUBLIC_KEY).and_then(|v| v.as_bytes()) {
+            o.server_public_key = base64::engine::general_purpose::STANDARD.encode(sv);
+        }
+
+        if let Some(sv) = get_ov(KEY_OBF_SIGNATURE_VALIDATE).and_then(|v| v.as_bool()) {
+            o.signature_validate = sv;
+        }
+        if let Some(sv) = get_ov(KEY_OBF_REQUIRE_TIMESTAMP).and_then(|v| v.as_bool()) {
+            o.require_timestamp = Some(sv);
+        }
+        if let Some(sv) = get_ov(KEY_OBF_ENCRYPTED_TIMESTAMP).and_then(|v| v.as_bool()) {
+            o.encrypted_timestamp = sv;
+        }
+        if let Some(sv) = get_ov(KEY_OBF_REQUIRE_ENCRYPTED_TIMESTAMP).and_then(|v| v.as_bool()) {
+            o.require_encrypted_timestamp = sv;
+        }
+        if let Some(sv) = get_ov(KEY_OBF_LEGACY_MODE_ENABLED).and_then(|v| v.as_bool()) {
+            o.legacy_mode_enabled = sv;
+        }
+
+        if let Some(sv) = get_ov(KEY_OBF_SKEW_SOFT_SECONDS).and_then(|v| v.as_integer()) {
+            o.skew_soft_seconds = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_SKEW_HARD_SECONDS).and_then(|v| v.as_integer()) {
+            o.skew_hard_seconds = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_REPLAY_WINDOW_SECONDS).and_then(|v| v.as_integer()) {
+            o.replay_window_seconds = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_REPLAY_CACHE_SIZE).and_then(|v| v.as_integer()) {
+            o.replay_cache_size = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_TRANSPORT_REPLAY).and_then(|v| v.as_bool()) {
+            o.transport_replay = sv;
+        }
+        if let Some(sv) = get_ov(KEY_OBF_TRANSPORT_REPLAY_LIMIT).and_then(|v| v.as_integer()) {
+            o.transport_replay_limit = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_RATE_LIMIT_PPS).and_then(|v| v.as_integer()) {
+            o.rate_limit_pps = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_ov(KEY_OBF_RATE_LIMIT_BURST).and_then(|v| v.as_integer()) {
+            o.rate_limit_burst = sv.try_into().unwrap_or_default();
         }
     }
 
-    if let Some(v) = get_kv(KEY_OBFUSCATION) {
-        if let Value::Map(m) = v {
-            let get_ov = |k: u64| {
-                m.iter()
-                    .find(|(kv, _)| match kv {
-                        Value::Integer(ki) => {
-                            let i: i64 = (*ki).try_into().unwrap_or_default();
-                            i == k as i64
-                        }
-                        _ => false,
-                    })
-                    .map(|(_, v)| v)
-            };
+    if let Some(Value::Map(m)) = get_kv(KEY_TRANSPORT_PADDING) {
+        let get_pv = |k: u64| {
+            m.iter()
+                .find(|(kv, _)| match kv {
+                    Value::Integer(ki) => {
+                        let i: i64 = (*ki).try_into().unwrap_or_default();
+                        i == k as i64
+                    }
+                    _ => false,
+                })
+                .map(|(_, v)| v)
+        };
 
-            let o = &mut out.obfuscation;
-            if let Some(sv) = get_ov(KEY_OBF_JC).and_then(|v| v.as_integer()) {
-                o.jc = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_JMIN).and_then(|v| v.as_integer()) {
-                o.jmin = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_JMAX).and_then(|v| v.as_integer()) {
-                o.jmax = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_S1).and_then(|v| v.as_integer()) {
-                o.s1 = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_S2).and_then(|v| v.as_integer()) {
-                o.s2 = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_S3).and_then(|v| v.as_integer()) {
-                o.s3 = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_S4).and_then(|v| v.as_integer()) {
-                o.s4 = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_H1).and_then(|v| v.as_text()) {
-                o.h1 = sv.to_string();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_H2).and_then(|v| v.as_text()) {
-                o.h2 = sv.to_string();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_H3).and_then(|v| v.as_text()) {
-                o.h3 = sv.to_string();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_H4).and_then(|v| v.as_text()) {
-                o.h4 = sv.to_string();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_I1).and_then(|v| v.as_text()) {
-                o.i1 = sv.to_string();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_I2).and_then(|v| v.as_text()) {
-                o.i2 = sv.to_string();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_I3).and_then(|v| v.as_text()) {
-                o.i3 = sv.to_string();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_I4).and_then(|v| v.as_text()) {
-                o.i4 = sv.to_string();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_I5).and_then(|v| v.as_text()) {
-                o.i5 = sv.to_string();
-            }
+        let mut t = TransportPadding {
+            pad_min: DEFAULT_PAD_MIN,
+            pad_max: DEFAULT_PAD_MAX,
+            pad_burst_min: DEFAULT_PAD_BURST_MIN,
+            pad_burst_max: DEFAULT_PAD_BURST_MAX,
+            pad_burst_prob: DEFAULT_PAD_BURST_PROB,
+        };
 
-            if let Some(sv) = get_ov(KEY_OBF_SERVER_PRIVATE_KEY).and_then(|v| v.as_bytes()) {
-                o.server_private_key = base64::engine::general_purpose::STANDARD.encode(sv);
-            }
-            if let Some(sv) = get_ov(KEY_OBF_SERVER_PUBLIC_KEY).and_then(|v| v.as_bytes()) {
-                o.server_public_key = base64::engine::general_purpose::STANDARD.encode(sv);
-            }
-
-            if let Some(sv) = get_ov(KEY_OBF_SIGNATURE_VALIDATE).and_then(|v| v.as_bool()) {
-                o.signature_validate = sv;
-            }
-            if let Some(sv) = get_ov(KEY_OBF_REQUIRE_TIMESTAMP).and_then(|v| v.as_bool()) {
-                o.require_timestamp = Some(sv);
-            }
-            if let Some(sv) = get_ov(KEY_OBF_ENCRYPTED_TIMESTAMP).and_then(|v| v.as_bool()) {
-                o.encrypted_timestamp = sv;
-            }
-            if let Some(sv) = get_ov(KEY_OBF_REQUIRE_ENCRYPTED_TIMESTAMP).and_then(|v| v.as_bool())
-            {
-                o.require_encrypted_timestamp = sv;
-            }
-            if let Some(sv) = get_ov(KEY_OBF_LEGACY_MODE_ENABLED).and_then(|v| v.as_bool()) {
-                o.legacy_mode_enabled = sv;
-            }
-
-            if let Some(sv) = get_ov(KEY_OBF_SKEW_SOFT_SECONDS).and_then(|v| v.as_integer()) {
-                o.skew_soft_seconds = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_SKEW_HARD_SECONDS).and_then(|v| v.as_integer()) {
-                o.skew_hard_seconds = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_REPLAY_WINDOW_SECONDS).and_then(|v| v.as_integer()) {
-                o.replay_window_seconds = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_REPLAY_CACHE_SIZE).and_then(|v| v.as_integer()) {
-                o.replay_cache_size = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_TRANSPORT_REPLAY).and_then(|v| v.as_bool()) {
-                o.transport_replay = sv;
-            }
-            if let Some(sv) = get_ov(KEY_OBF_TRANSPORT_REPLAY_LIMIT).and_then(|v| v.as_integer()) {
-                o.transport_replay_limit = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_RATE_LIMIT_PPS).and_then(|v| v.as_integer()) {
-                o.rate_limit_pps = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_ov(KEY_OBF_RATE_LIMIT_BURST).and_then(|v| v.as_integer()) {
-                o.rate_limit_burst = sv.try_into().unwrap_or_default();
-            }
+        if let Some(sv) = get_pv(KEY_PAD_MIN).and_then(|v| v.as_integer()) {
+            t.pad_min = sv.try_into().unwrap_or_default();
         }
-    }
-
-    if let Some(v) = get_kv(KEY_TRANSPORT_PADDING) {
-        if let Value::Map(m) = v {
-            let get_pv = |k: u64| {
-                m.iter()
-                    .find(|(kv, _)| match kv {
-                        Value::Integer(ki) => {
-                            let i: i64 = (*ki).try_into().unwrap_or_default();
-                            i == k as i64
-                        }
-                        _ => false,
-                    })
-                    .map(|(_, v)| v)
-            };
-
-            let mut t = TransportPadding {
-                pad_min: DEFAULT_PAD_MIN,
-                pad_max: DEFAULT_PAD_MAX,
-                pad_burst_min: DEFAULT_PAD_BURST_MIN,
-                pad_burst_max: DEFAULT_PAD_BURST_MAX,
-                pad_burst_prob: DEFAULT_PAD_BURST_PROB,
-            };
-
-            if let Some(sv) = get_pv(KEY_PAD_MIN).and_then(|v| v.as_integer()) {
-                t.pad_min = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_pv(KEY_PAD_MAX).and_then(|v| v.as_integer()) {
-                t.pad_max = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_pv(KEY_PAD_BURST_MIN).and_then(|v| v.as_integer()) {
-                t.pad_burst_min = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_pv(KEY_PAD_BURST_MAX).and_then(|v| v.as_integer()) {
-                t.pad_burst_max = sv.try_into().unwrap_or_default();
-            }
-            if let Some(sv) = get_pv(KEY_PAD_BURST_PROB).and_then(|v| v.as_float()) {
-                t.pad_burst_prob = sv;
-            }
-            out.transport_padding = Some(t);
+        if let Some(sv) = get_pv(KEY_PAD_MAX).and_then(|v| v.as_integer()) {
+            t.pad_max = sv.try_into().unwrap_or_default();
         }
+        if let Some(sv) = get_pv(KEY_PAD_BURST_MIN).and_then(|v| v.as_integer()) {
+            t.pad_burst_min = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_pv(KEY_PAD_BURST_MAX).and_then(|v| v.as_integer()) {
+            t.pad_burst_max = sv.try_into().unwrap_or_default();
+        }
+        if let Some(sv) = get_pv(KEY_PAD_BURST_PROB).and_then(|v| v.as_float()) {
+            t.pad_burst_prob = sv;
+        }
+        out.transport_padding = Some(t);
     }
 
     Ok(out)

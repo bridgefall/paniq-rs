@@ -38,7 +38,7 @@ impl PaddingPolicy {
         if !self.enabled {
             return 0;
         }
-        let base_range = if rng.gen_bool(self.burst_prob.min(1.0).max(0.0)) {
+        let base_range = if rng.gen_bool(self.burst_prob.clamp(0.0, 1.0)) {
             (self.burst_min, self.burst_max)
         } else {
             (self.min, self.max)

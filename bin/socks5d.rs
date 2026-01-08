@@ -51,12 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let proxy_addr_str = args
         .proxy_addr
         .clone()
-        .or_else(|| {
-            // No direct override in Socks5FileConfig to match Go,
-            // but we could keep it if it's useful.
-            // Go's ToServerConfig uses p.ProxyAddr.
-            None
-        })
+        .or(None)
         .unwrap_or_else(|| profile.proxy_addr.clone());
     let server_addr = proxy_addr_str.parse()?;
 

@@ -1,5 +1,3 @@
-#![cfg(feature = "socks5")]
-
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
