@@ -68,10 +68,22 @@ impl KcpTelemetry {
         }
 
         let delta = TelemetryCounters {
-            app_send_bytes: self.total.app_send_bytes.saturating_sub(self.last.app_send_bytes),
-            app_recv_bytes: self.total.app_recv_bytes.saturating_sub(self.last.app_recv_bytes),
-            kcp_input_bytes: self.total.kcp_input_bytes.saturating_sub(self.last.kcp_input_bytes),
-            kcp_output_bytes: self.total.kcp_output_bytes.saturating_sub(self.last.kcp_output_bytes),
+            app_send_bytes: self
+                .total
+                .app_send_bytes
+                .saturating_sub(self.last.app_send_bytes),
+            app_recv_bytes: self
+                .total
+                .app_recv_bytes
+                .saturating_sub(self.last.app_recv_bytes),
+            kcp_input_bytes: self
+                .total
+                .kcp_input_bytes
+                .saturating_sub(self.last.kcp_input_bytes),
+            kcp_output_bytes: self
+                .total
+                .kcp_output_bytes
+                .saturating_sub(self.last.kcp_output_bytes),
         };
 
         let secs = elapsed.as_secs_f64();
@@ -154,9 +166,7 @@ impl KcpStreamAdapter {
     /// - The adapter (for smux)
     /// - Channels for the KCP pump
     /// - Channels for the transport layer
-    pub fn new_adapter(
-        coalesce_limit: usize,
-    ) -> (Self, KcpPumpChannels, KcpTransportChannels) {
+    pub fn new_adapter(coalesce_limit: usize) -> (Self, KcpPumpChannels, KcpTransportChannels) {
         // Channel for UDP -> KCP input
         let (input_tx, input_rx) = mpsc::channel(DEFAULT_CHANNEL_CAPACITY);
         // Channel for smux -> KCP writes
@@ -414,7 +424,7 @@ pub async fn run_kcp_pump(
     tracing::info!("KCP pump task starting");
     // Update interval must match KCP nodelay interval (10ms) for optimal throughput
     let mut update_interval = tokio::time::interval(std::time::Duration::from_millis(10));
-    let mut telemetry = telemetry::enabled().then(KcpTelemetry::new);
+    let mut telemetry = telemetry::logs_enabled().then(KcpTelemetry::new);
 
     // Drain any initial output
     let initial_output = drain_output(kcp.as_mut(), &output_tx).await?;
@@ -480,10 +490,7 @@ pub async fn run_kcp_pump(
 }
 
 /// Helper: drain KCP receive queue and send to read channel.
-async fn drain_recv(
-    mut kcp: Pin<&mut kcp::Kcp>,
-    read_tx: &mpsc::Sender<Bytes>,
-) -> io::Result<u64> {
+async fn drain_recv(mut kcp: Pin<&mut kcp::Kcp>, read_tx: &mpsc::Sender<Bytes>) -> io::Result<u64> {
     let mut read_buf = vec![0u8; 8192];
     let mut total = 0u64;
     loop {

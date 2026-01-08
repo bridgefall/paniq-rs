@@ -38,13 +38,18 @@ const KCP_SND_WND: u32 = 1024;
 const KCP_RCV_WND: u32 = 1024;
 
 fn compute_kcp_mtu(max_packet_size: usize, max_payload: usize, transport_replay: bool) -> u32 {
-    let overhead = TRANSPORT_LEN_FIELD + if transport_replay { TRANSPORT_COUNTER_FIELD } else { 0 };
+    let overhead = TRANSPORT_LEN_FIELD
+        + if transport_replay {
+            TRANSPORT_COUNTER_FIELD
+        } else {
+            0
+        };
     let payload_budget = max_payload.min(max_packet_size);
     payload_budget.saturating_sub(overhead).max(1) as u32
 }
 
 fn start_transport_logger() {
-    if !telemetry::enabled() {
+    if !telemetry::logs_enabled() {
         return;
     }
 
@@ -326,9 +331,7 @@ impl KcpServer {
         let mut builder = async_smux::MuxBuilder::server();
         builder.with_max_tx_queue(std::num::NonZeroUsize::new(SMUX_MAX_TX_QUEUE).unwrap());
         builder.with_max_rx_queue(std::num::NonZeroUsize::new(SMUX_MAX_RX_QUEUE).unwrap());
-        let (connector, acceptor, worker) = builder
-            .with_connection(adapter)
-            .build();
+        let (connector, acceptor, worker) = builder.with_connection(adapter).build();
 
         // Spawn the mux worker task
         tokio::spawn(async move {
@@ -724,9 +727,7 @@ impl KcpClient {
         let mut builder = async_smux::MuxBuilder::client();
         builder.with_max_tx_queue(std::num::NonZeroUsize::new(SMUX_MAX_TX_QUEUE).unwrap());
         builder.with_max_rx_queue(std::num::NonZeroUsize::new(SMUX_MAX_RX_QUEUE).unwrap());
-        let (connector, acceptor, worker) = builder
-            .with_connection(adapter)
-            .build();
+        let (connector, acceptor, worker) = builder.with_connection(adapter).build();
 
         // Spawn the mux worker task
         tokio::spawn(async move {

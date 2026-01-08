@@ -353,7 +353,7 @@ fn log_smux_worker_result(result: Result<(), async_smux::error::MuxError>) {
 }
 
 fn start_transport_logger() {
-    if !telemetry::enabled() {
+    if !telemetry::logs_enabled() {
         return;
     }
 
@@ -928,7 +928,7 @@ async fn run_kcp_engine_server(
     engine.set_output(output_fn);
 
     // Initialize KCP telemetry
-    let mut kcp_telemetry = telemetry::enabled().then(KcpTelemetry::new);
+    let mut kcp_telemetry = telemetry::logs_enabled().then(KcpTelemetry::new);
 
     // Main I/O loop with periodic updates
     let mut update_interval = tokio::time::interval(Duration::from_millis(update_ms as u64));
@@ -1553,7 +1553,7 @@ async fn run_kcp_engine_client(
     engine.set_output(output_fn);
 
     // Initialize KCP telemetry
-    let mut kcp_telemetry = telemetry::enabled().then(KcpTelemetry::new);
+    let mut kcp_telemetry = telemetry::logs_enabled().then(KcpTelemetry::new);
 
     // Main I/O loop with periodic updates
     let mut update_interval = tokio::time::interval(Duration::from_millis(update_ms as u64));
