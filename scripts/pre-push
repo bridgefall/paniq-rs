@@ -1,0 +1,41 @@
+#!/bin/sh
+#
+# Pre-push hook to ensure code is formatted before pushing
+# This hook runs cargo fmt --check to verify formatting
+#
+# To install: ./scripts/pre-push install
+
+# Self-installation logic
+if [ "$1" = "install" ]; then
+    SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    HOOK_PATH=".git/hooks/pre-push"
+
+    if [ ! -d ".git/hooks" ]; then
+        echo "❌ Error: .git/hooks directory not found. Are you in the repository root?"
+        exit 1
+    fi
+
+    cp "$SCRIPT_PATH" "$HOOK_PATH"
+    chmod +x "$HOOK_PATH"
+    echo "✅ Pre-push hook installed successfully to $HOOK_PATH"
+    echo ""
+    echo "The hook will now run 'cargo fmt --check' before every push."
+    echo "To uninstall: rm .git/hooks/pre-push"
+    exit 0
+fi
+
+# Hook execution logic
+echo "Running cargo fmt --check..."
+
+# Run cargo fmt in check mode
+if ! cargo fmt -- --check; then
+    echo ""
+    echo "❌ Code formatting check failed!"
+    echo "Please run 'cargo fmt' to format your code before pushing."
+    echo ""
+    echo "To bypass this hook (not recommended), use: git push --no-verify"
+    exit 1
+fi
+
+echo "✅ Code formatting check passed!"
+exit 0
