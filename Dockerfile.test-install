@@ -1,0 +1,28 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y make sudo curl
+
+# Install Rust via rustup (Debian's cargo is too old for Cargo.lock v4)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Mock systemctl to avoid failure in Docker
+RUN echo '#!/bin/bash\necho "Mocked systemctl: $*"' > /usr/local/bin/systemctl && \
+    chmod +x /usr/local/bin/systemctl
+
+WORKDIR /build
+COPY . .
+
+# Run the installation (this will install dependencies and build)
+RUN make install-debian
+
+# Verification
+RUN test -f /usr/local/bin/paniq-rs-proxy
+RUN test -f /usr/local/bin/paniq-rs-ctl
+RUN test -d /etc/bridgefall-rs
+RUN test -f /etc/bridgefall-rs/paniq-rs-proxy.json
+RUN test -f /etc/bridgefall-rs/profile.json
+RUN test -f /etc/bridgefall-rs/client.txt
+RUN test -f /etc/systemd/system/paniq-rs-proxy.service
+
+RUN echo "Installation test passed!"

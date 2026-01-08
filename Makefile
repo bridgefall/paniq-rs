@@ -2,7 +2,8 @@
 # Bridgefall Secure Proxy System - Rust Implementation
 
 # Variables
-CARGO := cargo
+# Use rustup-installed cargo if available, otherwise fall back to PATH
+CARGO := $(shell [ -f "$(HOME)/.cargo/bin/cargo" ] && echo "$(HOME)/.cargo/bin/cargo" || echo "cargo")
 FEATURES_KCP := kcp
 FEATURES_SOCKS5 := socks5
 FEATURES_RCGEN :=
@@ -228,6 +229,7 @@ help:
 	@echo "$(COLOR_GREEN)Installation (Debian):$(COLOR_RESET)"
 	@echo "  make install-debian      - Full installation on Debian (requires sudo)"
 	@echo "  make uninstall-debian    - Full uninstallation on Debian (requires sudo)"
+	@echo "  make test-install-debian - Test installation in Docker"
 	@echo ""
 
 ## ============================================================================
@@ -253,7 +255,12 @@ install-deps-debian:
 	@echo "$(COLOR_BLUE)Installing dependencies...$(COLOR_RESET)"
 	@set -e; \
 	apt-get update; \
-	apt-get install -y curl jq build-essential pkg-config libssl-dev
+	apt-get install -y curl jq build-essential pkg-config libssl-dev; \
+	if ! command -v cargo >/dev/null 2>&1; then \
+		echo "Installing Rust via rustup..."; \
+		curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; \
+		export PATH="$$HOME/.cargo/bin:$$PATH"; \
+	fi
 
 .PHONY: gen-profile
 gen-profile:
@@ -280,7 +287,7 @@ install-proxy-systemd: gen-profile
 	install -m 0644 systemd/paniq-rs-proxy.service /etc/systemd/system/paniq-rs-proxy.service; \
 	install -m 0755 $(TARGET_RELEASE)/proxy-server /usr/local/bin/paniq-rs-proxy; \
 	install -m 0755 $(TARGET_RELEASE)/paniq-ctl /usr/local/bin/paniq-rs-ctl; \
-	$(TARGET_RELEASE)/paniq-ctl profile-cbor -base64 < /etc/bridgefall-rs/profile.json > /etc/bridgefall-rs/client.txt; \
+	$(TARGET_RELEASE)/paniq-ctl profile-cbor --base64 < /etc/bridgefall-rs/profile.json > /etc/bridgefall-rs/client.txt; \
 	chmod 644 /etc/bridgefall-rs/client.txt; \
 	systemctl daemon-reload; \
 	systemctl enable --now paniq-rs-proxy.service; \
@@ -305,6 +312,12 @@ uninstall-debian:
 	rm -rf /etc/bridgefall-rs; \
 	systemctl daemon-reload; \
 	echo "==> paniq-rs-proxy disabled and removed"
+
+.PHONY: test-install-debian
+test-install-debian:
+	@echo "$(COLOR_BLUE)Testing installation in Docker...$(COLOR_RESET)"
+	docker build -f Dockerfile.test-install -t paniq-rs-install-test .
+	@echo "$(COLOR_GREEN)Installation test successful!$(COLOR_RESET)"
 
 ## ============================================================================
 ## Feature-Specific Builds
