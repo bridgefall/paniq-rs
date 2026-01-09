@@ -50,6 +50,7 @@ async fn kcp_round_trip_over_obfuscating_socket() {
         handshake_timeout_secs: 5,
         handshake_attempts: 3,
         preamble_delay_ms: 5,
+        flush_interval_ms: 10,
     };
 
     let client_config = paniq::kcp::ClientConfig {
@@ -65,6 +66,7 @@ async fn kcp_round_trip_over_obfuscating_socket() {
         handshake_timeout: std::time::Duration::from_secs(5),
         handshake_attempts: 3,
         preamble_delay: std::time::Duration::from_millis(5),
+        flush_interval_ms: 10,
     };
 
     // Use a known port

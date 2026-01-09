@@ -75,6 +75,12 @@ impl SocksHandle {
             handshake_timeout_secs: 5,
             handshake_attempts: 3,
             preamble_delay_ms: 5,
+            flush_interval_ms: config
+                .profile
+                .kcp
+                .as_ref()
+                .map(|k| k.flush_interval_ms)
+                .unwrap_or(10),
         };
         let relay_buffer_size = client_config.max_payload;
 

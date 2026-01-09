@@ -83,6 +83,11 @@ pub struct KcpConfig {
     /// Optional maximum KCP send queue size (in segments)
     #[serde(default)]
     pub max_snd_queue: Option<u32>,
+
+    /// KCP flush interval in milliseconds. Lower = lower latency but more CPU.
+    /// Default: 10ms. For bulk transfers, 20-50ms may be more efficient.
+    #[serde(default = "default_flush_interval_ms")]
+    pub flush_interval_ms: u32,
 }
 
 fn default_max_packet_size() -> usize {
@@ -93,6 +98,9 @@ fn default_max_payload() -> usize {
 }
 fn default_max_streams() -> usize {
     256
+}
+fn default_flush_interval_ms() -> u32 {
+    10
 }
 
 fn default_handshake_timeout() -> Duration {
@@ -116,6 +124,7 @@ impl Default for KcpConfig {
             target_bps: None,
             rtt_ms: None,
             max_snd_queue: None,
+            flush_interval_ms: default_flush_interval_ms(),
         }
     }
 }

@@ -8,11 +8,12 @@
   "kcp": {
     "max_packet_size": 1350,
     "max_payload": 1200,
-    "send_window": null,
-    "recv_window": null,
+    "send_window": 1024,
+    "recv_window": 1024,
     "target_bps": 100000000,
     "rtt_ms": 100,
-    "max_snd_queue": null
+    "max_snd_queue": null,
+    "flush_interval_ms": 20
   },
   "transport_padding": {
     "pad_min": 16,

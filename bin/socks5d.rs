@@ -71,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         handshake_timeout_secs: profile.handshake_timeout_or_default().as_secs(),
         handshake_attempts: profile.handshake_attempts,
         preamble_delay_ms: profile.preamble_delay_ms_or_default(),
+        flush_interval_ms: kcp_profile.flush_interval_ms,
     };
 
     let client = PaniqClient::new(server_addr, obf_config, config);

@@ -101,6 +101,12 @@ impl ProxyHandle {
             handshake_timeout_secs: DEFAULT_HANDSHAKE_TIMEOUT_SECS,
             handshake_attempts: DEFAULT_HANDSHAKE_ATTEMPTS,
             preamble_delay_ms: DEFAULT_PREAMBLE_DELAY_MS,
+            flush_interval_ms: config
+                .profile
+                .kcp
+                .as_ref()
+                .map(|k| k.flush_interval_ms)
+                .unwrap_or(10),
         };
 
         let endpoint = listen(config.listen_addr, framer, server_config).await?;

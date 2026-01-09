@@ -35,14 +35,11 @@ fast-socks5 = "0.10.0"
 clap = { version = "4.4", features = ["derive"] }
 ciborium = "0.2"
 chrono = "0.4"
-kcp-rs = { version = "0.2.4", optional = true }
 kcp-tokio = { version = "0.3", optional = true }
 async_smux = { version = "0.3.4", optional = true }
 bytes = { version = "1.11.0" }
 futures = { version = "0.3.31" }
 tokio-util = { version = "0.7", optional = true }
-bincode = "1.3"
-tempfile = { version = "3", optional = true }
 uniffi = { version = "0.28", features = ["tokio", "cli"], optional = true }
 uniffi_macros = { version = "0.28", optional = true }
 
@@ -51,7 +48,6 @@ default = []
 kcp = [
     "tokio",
     "dep:tracing-subscriber",
-    "kcp-rs",
     "kcp-tokio",
     "async_smux",
     "tokio-util",
@@ -81,11 +77,6 @@ required-features = ["socks5"]
 name = "proxy-server"
 path = "bin/proxy-server.rs"
 required-features = ["kcp"]
-
-[[bin]]
-name = "gen_test_cert"
-path = "bin/gen_test_cert.rs"
-required-features = []
 
 [patch.crates-io]
 kcp-tokio = { git = "https://github.com/bridgefall/rust-kcp", branch = "fix-ack-window" }

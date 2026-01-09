@@ -5,6 +5,7 @@ use super::{
     ChainSet, ChainSetError, SharedRng,
 };
 use crate::obf::chain::Chain;
+use rand::RngCore;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -116,6 +117,19 @@ impl Framer {
         payload: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<(), FramerError> {
+        let mut rng = self.rng.0.lock().unwrap();
+        self.encode_frame_into_with_rng(msg_type, payload, out, &mut *rng)
+    }
+
+    /// Encode frame into a provided buffer with an external RNG.
+    #[inline]
+    pub fn encode_frame_into_with_rng<R: RngCore>(
+        &self,
+        msg_type: MessageType,
+        payload: &[u8],
+        out: &mut Vec<u8>,
+        rng: &mut R,
+    ) -> Result<(), FramerError> {
         let padding = self.padding_for(msg_type);
         let header = self
             .header_for(msg_type)
@@ -131,7 +145,7 @@ impl Framer {
 
         if pad_len > 0 {
             out.resize(pad_len, 0);
-            self.rng.fill_bytes(&mut out[..pad_len]);
+            rng.fill_bytes(&mut out[..pad_len]);
         }
         out.extend_from_slice(&header.generate().to_le_bytes());
         out.extend_from_slice(payload);

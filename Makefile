@@ -13,8 +13,7 @@ FEATURES_FULL := --features "kcp,socks5"
 # Binaries
 BIN_PROXY_SERVER := proxy-server
 BIN_SOCKS5D := socks5d
-BIN_GEN_CERT := gen_test_cert
-BINS := $(BIN_PROXY_SERVER) $(BIN_SOCKS5D) $(BIN_GEN_CERT)
+BINS := $(BIN_PROXY_SERVER) $(BIN_SOCKS5D)
 
 # Test names
 TEST_ROUNDTRIP := kcp_round_trip_over_obfuscating_socket
@@ -61,10 +60,6 @@ $(BIN_SOCKS5D):
 	@echo "$(COLOR_GREEN)Building $(BIN_SOCKS5D)...$(COLOR_RESET)"
 	$(CARGO) build --bin $(BIN_SOCKS5D) --features "socks5,kcp"
 
-.PHONY: $(BIN_GEN_CERT)
-$(BIN_GEN_CERT):
-	@echo "$(COLOR_GREEN)Building $(BIN_GEN_CERT)...$(COLOR_RESET)"
-	$(CARGO) build --bin $(BIN_GEN_CERT)
 
 ## ============================================================================
 ## Test Targets
@@ -233,7 +228,6 @@ help:
 	@echo "  make build-release      - Build all release binaries"
 	@echo "  make proxy-server       - Build proxy-server binary"
 	@echo "  make socks5d            - Build socks5d binary"
-	@echo "  make gen_test_cert      - Build gen_test_cert binary"
 	@echo ""
 	@echo "$(COLOR_GREEN)Test Targets:$(COLOR_RESET)"
 	@echo "  make test               - Run all tests"

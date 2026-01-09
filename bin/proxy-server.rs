@@ -45,20 +45,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let framer = Framer::new(profile.obf_config())?;
 
     // Map profile config to server config
+    let kcp_profile = profile.kcp.clone().unwrap_or_default();
     let config = ServerConfigWrapper {
         max_packet_size: profile.effective_kcp_max_packet_size(),
         max_payload: profile.effective_kcp_max_payload(),
-        send_window: None,
-        recv_window: None,
-        target_bps: None,
-        rtt_ms: None,
-        max_snd_queue: None,
+        send_window: kcp_profile.send_window,
+        recv_window: kcp_profile.recv_window,
+        target_bps: kcp_profile.target_bps,
+        rtt_ms: kcp_profile.rtt_ms,
+        max_snd_queue: kcp_profile.max_snd_queue,
         transport_replay: profile.obfuscation.transport_replay,
         padding_policy: profile.transport_padding_policy(),
         idle_timeout_secs: 120,
-        handshake_timeout_secs: 5,
-        handshake_attempts: 3,
-        preamble_delay_ms: 5,
+        handshake_timeout_secs: profile.handshake_timeout_or_default().as_secs(),
+        handshake_attempts: profile.handshake_attempts,
+        preamble_delay_ms: profile.preamble_delay_ms_or_default(),
+        flush_interval_ms: kcp_profile.flush_interval_ms,
     };
 
     let listen_addr: SocketAddr = args.listen.unwrap_or_else(|| {

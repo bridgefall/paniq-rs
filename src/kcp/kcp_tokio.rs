@@ -479,6 +479,8 @@ pub struct ServerConfig {
     pub handshake_attempts: usize,
     /// Preamble delay
     pub preamble_delay: Duration,
+    /// KCP flush interval in milliseconds
+    pub flush_interval_ms: u32,
 }
 
 impl Default for ServerConfig {
@@ -497,6 +499,7 @@ impl Default for ServerConfig {
             handshake_timeout: Duration::from_secs(5),
             handshake_attempts: 3,
             preamble_delay: Duration::from_millis(5),
+            flush_interval_ms: 10,
         }
     }
 }
@@ -687,7 +690,7 @@ impl KcpServer {
             .stream_mode(true)
             .nodelay_config(NodeDelayConfig::custom(
                 true,
-                KCP_NODELAY_INTERVAL_MS,
+                self.config.flush_interval_ms,
                 KCP_FAST_RESEND,
                 KCP_NO_CONGESTION,
             ));
@@ -870,59 +873,70 @@ async fn run_kcp_engine_server(
     );
 
     // Set output function for sending KCP packets via UDP with envelope framing
-    let socket_clone = socket.clone();
+    // Dedicated UDP sender task to offload socket I/O
+    let (udp_tx, mut udp_rx) = mpsc::channel::<(Bytes, SocketAddr)>(SMUX_MAX_TX_QUEUE * 2);
+    let socket_sender = socket.clone();
+    tokio::spawn(async move {
+        while let Some((data, addr)) = udp_rx.recv().await {
+            if let Err(e) = socket_sender.send_to(&data, addr).await {
+                error!("UDP send error: {}", e);
+            }
+        }
+    });
+
+    // Set output function for sending KCP packets via UDP with envelope framing
     let framer_clone = framer.clone();
     let config_clone = config.clone();
     let counter_clone = counter.clone();
 
     let output_fn = Arc::new(move |kcp_bytes: Bytes| -> Pin<Box<dyn Future<Output = Result<(), kcp_tokio::KcpError>> + Send>> {
-        let socket = socket_clone.clone();
+        let udp_tx = udp_tx.clone();
         let framer = framer_clone.clone();
         let config = config_clone.clone();
         let counter = counter_clone.clone();
 
         Box::pin(async move {
-            // Reusable buffers - these get allocated once per packet but the capacity is reused
             let mut payload_buf = Vec::with_capacity(config.max_payload);
             let mut datagram_buf = Vec::with_capacity(config.max_payload + 256);
 
-            // Build transport payload with counter and padding
-            let replay_counter = if config.transport_replay {
-                Some(counter.fetch_add(1, Ordering::SeqCst))
-            } else {
-                None
-            };
+            // Framing is synchronous within this future
+            let datagram = {
+                let mut thread_rng = rand::thread_rng();
 
-            // Hold RNG lock once for both operations
-            {
-                let mut rng_guard = framer.rng().0.lock().unwrap();
+                // Build transport payload
+                let replay_counter = if config.transport_replay {
+                    Some(counter.fetch_add(1, Ordering::SeqCst))
+                } else {
+                    None
+                };
 
                 if let Err(e) = crate::envelope::transport::build_transport_payload_into(
                     kcp_bytes.as_ref(),
                     replay_counter,
                     &config.padding_policy,
                     config.max_payload,
-                    &mut *rng_guard,
+                    &mut thread_rng,
                     &mut payload_buf,
                 ) {
-                    error!("Failed to build transport payload: {}", e);
                     return Err(kcp_tokio::KcpError::protocol(e.to_string()));
                 }
-            }
 
-            // Encode as Transport frame (framer uses its own RNG internally)
-            if let Err(e) = framer.encode_frame_into(MessageType::Transport, &payload_buf, &mut datagram_buf) {
-                error!("Failed to encode transport frame: {}", e);
-                return Err(kcp_tokio::KcpError::protocol(e.to_string()));
-            }
+                // Encode as Transport frame
+                if let Err(e) = framer.encode_frame_into_with_rng(
+                    MessageType::Transport,
+                    &payload_buf,
+                    &mut datagram_buf,
+                    &mut thread_rng,
+                ) {
+                    return Err(kcp_tokio::KcpError::protocol(e.to_string()));
+                }
 
-            // Send to peer
-            telemetry::record_udp_out(datagram_buf.len());
-            trace!(target: "paniq::transport_dump", direction = "tx", peer = %peer_addr, len = datagram_buf.len(), msg_type = MessageType::Transport.into_u8(), hex = %hex::encode(&datagram_buf));
-            if let Err(e) = socket.send_to(&datagram_buf, peer_addr).await {
-                error!("Failed to send transport packet: {}", e);
-                return Err(kcp_tokio::KcpError::protocol(e.to_string()));
-            }
+                Bytes::from(datagram_buf)
+            };
+
+            // Queue for sending
+            telemetry::record_udp_out(datagram.len());
+            let _ = udp_tx.send((datagram, peer_addr)).await;
 
             Ok(())
         })
@@ -1102,6 +1116,8 @@ pub struct ClientConfig {
     pub handshake_attempts: usize,
     /// Preamble delay
     pub preamble_delay: Duration,
+    /// KCP flush interval in milliseconds
+    pub flush_interval_ms: u32,
 }
 
 impl Default for ClientConfig {
@@ -1119,6 +1135,7 @@ impl Default for ClientConfig {
             handshake_timeout: Duration::from_secs(5),
             handshake_attempts: 3,
             preamble_delay: Duration::from_millis(5),
+            flush_interval_ms: 10,
         }
     }
 }
@@ -1201,7 +1218,7 @@ impl KcpClient {
             .stream_mode(true)
             .nodelay_config(NodeDelayConfig::custom(
                 true,
-                KCP_NODELAY_INTERVAL_MS,
+                self.config.flush_interval_ms,
                 KCP_FAST_RESEND,
                 KCP_NO_CONGESTION,
             ));
@@ -1405,61 +1422,69 @@ async fn run_kcp_engine_client(
         padding_reserve,
     );
 
+    // Dedicated UDP sender task to offload socket I/O
+    let (udp_tx, mut udp_rx) = mpsc::channel::<Bytes>(SMUX_MAX_TX_QUEUE * 2);
+    let socket = socket.clone();
+    tokio::spawn(async move {
+        while let Some(data) = udp_rx.recv().await {
+            if let Err(e) = socket.send(&data).await {
+                error!("UDP send error: {}", e);
+            }
+        }
+    });
+
     // Set output function for sending KCP packets via UDP with envelope framing
-    let socket_clone = socket.clone();
     let framer_clone = framer.clone();
-    let config_clone = config.clone();
+    let config_clone = Arc::new(config);
     let counter_clone = counter.clone();
 
     let output_fn = Arc::new(move |kcp_bytes: Bytes| -> Pin<Box<dyn Future<Output = Result<(), kcp_tokio::KcpError>> + Send>> {
-        let socket = socket_clone.clone();
+        let udp_tx = udp_tx.clone();
         let framer = framer_clone.clone();
         let config = config_clone.clone();
         let counter = counter_clone.clone();
 
         Box::pin(async move {
-            // Reusable buffers
             let mut payload_buf = Vec::with_capacity(config.max_payload);
             let mut datagram_buf = Vec::with_capacity(config.max_payload + 256);
 
-            // Build transport payload with counter and padding
-            let replay_counter = if config.transport_replay {
-                Some(counter.fetch_add(1, Ordering::SeqCst))
-            } else {
-                None
-            };
+            let datagram = {
+                let mut thread_rng = rand::thread_rng();
 
-            // Hold RNG lock once for transport encoding
-            {
-                let mut rng_guard = framer.rng().0.lock().unwrap();
+                // Build transport payload
+                let replay_counter = if config.transport_replay {
+                    Some(counter.fetch_add(1, Ordering::SeqCst))
+                } else {
+                    None
+                };
 
                 if let Err(e) = crate::envelope::transport::build_transport_payload_into(
                     kcp_bytes.as_ref(),
                     replay_counter,
                     &config.padding_policy,
                     config.max_payload,
-                    &mut *rng_guard,
+                    &mut thread_rng,
                     &mut payload_buf,
                 ) {
-                    error!("Failed to build transport payload: {}", e);
                     return Err(kcp_tokio::KcpError::protocol(e.to_string()));
                 }
-            }
 
-            // Encode as Transport frame (framer uses its own RNG internally)
-            if let Err(e) = framer.encode_frame_into(MessageType::Transport, &payload_buf, &mut datagram_buf) {
-                error!("Failed to encode transport frame: {}", e);
-                return Err(kcp_tokio::KcpError::protocol(e.to_string()));
-            }
+                // Encode as Transport frame
+                if let Err(e) = framer.encode_frame_into_with_rng(
+                    MessageType::Transport,
+                    &payload_buf,
+                    &mut datagram_buf,
+                    &mut thread_rng,
+                ) {
+                    return Err(kcp_tokio::KcpError::protocol(e.to_string()));
+                }
 
-            // Send to peer
-            telemetry::record_udp_out(datagram_buf.len());
-            trace!(target: "paniq::transport_dump", direction = "tx", peer = %_server_addr, len = datagram_buf.len(), msg_type = MessageType::Transport.into_u8(), hex = %hex::encode(&datagram_buf));
-            if let Err(e) = socket.send(&datagram_buf).await {
-                error!("Failed to send transport packet: {}", e);
-                // Return Ok to keep the engine running; KCP retransmissions will handle the loss.
-                return Ok(());
-            }
+                Bytes::from(datagram_buf)
+            };
+
+            // Queue for sending
+            telemetry::record_udp_out(datagram.len());
+            let _ = udp_tx.send(datagram).await;
 
             Ok(())
         })
@@ -1592,7 +1617,6 @@ async fn run_kcp_engine_client(
     }
 }
 
-const KCP_NODELAY_INTERVAL_MS: u32 = 10;
 const KCP_FAST_RESEND: u32 = 2;
 const KCP_NO_CONGESTION: bool = true;
 

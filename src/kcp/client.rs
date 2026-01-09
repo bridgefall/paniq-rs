@@ -118,6 +118,8 @@ pub struct ClientConfigWrapper {
     pub handshake_attempts: usize,
     /// Preamble delay in milliseconds
     pub preamble_delay_ms: u64,
+    /// KCP flush interval in milliseconds (default: 10)
+    pub flush_interval_ms: u32,
 }
 
 impl Default for ClientConfigWrapper {
@@ -135,6 +137,7 @@ impl Default for ClientConfigWrapper {
             handshake_timeout_secs: 5,
             handshake_attempts: 3,
             preamble_delay_ms: 5,
+            flush_interval_ms: 10,
         }
     }
 }
@@ -162,6 +165,7 @@ pub async fn connect(
         handshake_timeout: std::time::Duration::from_secs(config.handshake_timeout_secs),
         handshake_attempts: config.handshake_attempts,
         preamble_delay: std::time::Duration::from_millis(config.preamble_delay_ms),
+        flush_interval_ms: config.flush_interval_ms,
     };
 
     let client = KcpClient::connect(server_addr, framer, client_config)
