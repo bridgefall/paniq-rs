@@ -123,6 +123,50 @@ test-soak:
 	@echo "$(COLOR_BLUE)Running soak tests ($(SOAK_SECS)s)...$(COLOR_RESET)"
 	$(CARGO) test --test $(TEST_INTEGRATION_KCP) --features "socks5,kcp" soak_socks5_over_kcp_30s -- --nocapture
 
+# Profiling benchmarks
+# These tests are designed to be run under a profiler (flamegraph, samply, perf)
+.PHONY: profile-build
+profile-build:
+	@echo "$(COLOR_BLUE)Building profiling benchmark...$(COLOR_RESET)"
+	$(CARGO) build --release --test profile_benchmark --features "socks5,kcp"
+
+.PHONY: profile-run
+profile-run: profile-build
+	@echo "$(COLOR_BLUE)Running profiling benchmark...$(COLOR_RESET)"
+	$(CARGO) test --release --test profile_benchmark --features "socks5,kcp" profile_high_throughput -- --nocapture
+
+.PHONY: profile-single
+profile-single: profile-build
+	@echo "$(COLOR_BLUE)Running single-stream profiling benchmark...$(COLOR_RESET)"
+	$(CARGO) test --release --test profile_benchmark --features "socks5,kcp" profile_single_stream -- --nocapture
+
+.PHONY: profile-flamegraph
+profile-flamegraph:
+	@echo "$(COLOR_BLUE)Running benchmark with flamegraph...$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Note: Requires 'cargo install flamegraph'. On macOS may need sudo.$(COLOR_RESET)"
+	$(CARGO) flamegraph --test profile_benchmark --features "socks5,kcp" -- profile_high_throughput --nocapture
+
+.PHONY: profile-samply
+profile-samply: profile-build
+	@echo "$(COLOR_BLUE)Running benchmark with samply profiler...$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Note: Requires 'cargo install samply'$(COLOR_RESET)"
+	samply record $(TARGET_RELEASE)/deps/profile_benchmark-* profile_high_throughput --nocapture
+
+# Benchmark transfer tests
+.PHONY: benchmark
+benchmark:
+	@echo "$(COLOR_BLUE)Running transfer benchmarks...$(COLOR_RESET)"
+	$(CARGO) test --release --test benchmark_transfer --features "socks5,kcp" -- --nocapture
+
+.PHONY: benchmark-medium
+benchmark-medium:
+	@echo "$(COLOR_BLUE)Running medium transfer benchmark (50MB)...$(COLOR_RESET)"
+	$(CARGO) test --release --test benchmark_transfer --features "socks5,kcp" benchmark_transfer_medium -- --nocapture
+
+.PHONY: benchmark-large
+benchmark-large:
+	@echo "$(COLOR_BLUE)Running large transfer benchmark (100MB)...$(COLOR_RESET)"
+	$(CARGO) test --release --test benchmark_transfer --features "socks5,kcp" benchmark_transfer_large -- --nocapture --ignored
 
 # Test with verbose output
 .PHONY: test-verbose
@@ -162,6 +206,8 @@ clippy-fix:
 check:
 	@echo "$(COLOR_BLUE)Running cargo check...$(COLOR_RESET)"
 	$(CARGO) check --all-targets $(FEATURES_FULL)
+
+lint: fmt-check clippy
 
 .PHONY: doc
 doc:
@@ -207,6 +253,17 @@ help:
 	@echo "  $(COLOR_YELLOW)Soak Tests:$(COLOR_RESET)"
 	@echo "  make test-soak          - Run soak test (default: 30s)"
 	@echo "  make test-soak SOAK_SECS=60 - Run 60-second soak test"
+	@echo ""
+	@echo "  $(COLOR_YELLOW)Benchmarks:$(COLOR_RESET)"
+	@echo "  make benchmark          - Run all transfer benchmarks"
+	@echo "  make benchmark-medium   - Run 50MB transfer benchmark"
+	@echo "  make benchmark-large    - Run 100MB transfer benchmark"
+	@echo ""
+	@echo "  $(COLOR_YELLOW)Profiling:$(COLOR_RESET)"
+	@echo "  make profile-run        - Run profiling benchmark"
+	@echo "  make profile-single     - Run single-stream profiling"
+	@echo "  make profile-flamegraph - Generate flamegraph SVG"
+	@echo "  make profile-samply     - Profile with samply (macOS)"
 	@echo ""
 	@echo "$(COLOR_GREEN)Development:$(COLOR_RESET)"
 	@echo "  make fmt                - Format code"
