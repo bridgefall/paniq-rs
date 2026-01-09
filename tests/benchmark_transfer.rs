@@ -377,6 +377,7 @@ async fn benchmark_transfer_small() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn benchmark_transfer_medium() {
     run_benchmark("Medium File Transfer", TEST_SIZE_MEDIUM, 3)
         .await

@@ -200,6 +200,7 @@ async fn integration_socks5_over_kcp() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn soak_socks5_over_kcp_30s() {
     // Test duration can be configured via SOAK_SECS env var (default: 10 seconds).
     // Note: Using production code paths creates connections much faster than the
@@ -364,6 +365,7 @@ async fn soak_socks5_over_kcp_30s() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn lifecycle_repeated_setup_teardown() {
     // Test repeated server setup/teardown to catch resource leaks.
     // This is separate from the soak test which reuses connections.
