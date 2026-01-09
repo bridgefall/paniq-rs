@@ -2,6 +2,101 @@ use super::{ObfuscationConfig, Profile, TransportPadding};
 use base64::Engine;
 use ciborium::value::Value;
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
+
+fn parse_header_spec(h: &str) -> Option<(u32, u32)> {
+    let parts: Vec<&str> = h.split('-').collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let start = parts[0].parse::<u32>().ok()?;
+    let end = if parts.len() > 1 {
+        parts[1].parse::<u32>().ok()?
+    } else {
+        start
+    };
+    Some((start, end))
+}
+
+fn encode_header_spec(h: &str) -> Value {
+    if let Some((start, end)) = parse_header_spec(h) {
+        if start == end {
+            Value::Integer(start.into())
+        } else {
+            Value::Array(vec![
+                Value::Integer(start.into()),
+                Value::Integer(end.into()),
+            ])
+        }
+    } else {
+        Value::Text(h.to_string())
+    }
+}
+
+fn decode_header_spec(v: &Value) -> String {
+    match v {
+        Value::Integer(i) => {
+            let val: u64 = (*i).try_into().unwrap_or_default();
+            val.to_string()
+        }
+        Value::Array(arr) if arr.len() == 2 => {
+            let start = arr[0]
+                .as_integer()
+                .and_then(|i| i.try_into().ok())
+                .unwrap_or(0u64);
+            let end = arr[1]
+                .as_integer()
+                .and_then(|i| i.try_into().ok())
+                .unwrap_or(0u64);
+            format!("{}-{}", start, end)
+        }
+        Value::Text(s) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+fn encode_proxy_addr(addr: &str) -> Value {
+    if let Ok(socket_addr) = addr.parse::<SocketAddr>() {
+        let mut bytes = Vec::new();
+        match socket_addr {
+            SocketAddr::V4(a) => {
+                bytes.push(0u8); // IPv4
+                bytes.extend_from_slice(&a.ip().octets());
+                bytes.extend_from_slice(&a.port().to_be_bytes());
+            }
+            SocketAddr::V6(a) => {
+                bytes.push(1u8); // IPv6
+                bytes.extend_from_slice(&a.ip().octets());
+                bytes.extend_from_slice(&a.port().to_be_bytes());
+            }
+        }
+        Value::Bytes(bytes)
+    } else {
+        Value::Text(addr.to_string())
+    }
+}
+
+fn decode_proxy_addr(v: &Value) -> String {
+    match v {
+        Value::Bytes(b) if !b.is_empty() => match b[0] {
+            0 if b.len() == 7 => {
+                let mut ip_bytes = [0u8; 4];
+                ip_bytes.copy_from_slice(&b[1..5]);
+                let port = u16::from_be_bytes([b[5], b[6]]);
+                format!("{}:{}", std::net::Ipv4Addr::from(ip_bytes), port)
+            }
+            1 if b.len() == 19 => {
+                let mut ip_bytes = [0u8; 16];
+                ip_bytes.copy_from_slice(&b[1..17]);
+                let port = u16::from_be_bytes([b[17], b[18]]);
+                format!("[{}]:{}", std::net::Ipv6Addr::from(ip_bytes), port)
+            }
+            _ => String::new(),
+        },
+        Value::Text(s) => s.clone(),
+        _ => String::new(),
+    }
+}
 
 // CBOR Key constants
 const KEY_VERSION: u64 = 0;
@@ -84,7 +179,9 @@ pub fn encode_compact_profile(
         map.insert(KEY_NAME, Value::Text(p.name.clone()));
     }
 
-    map.insert(KEY_PROXY_ADDR, Value::Text(p.proxy_addr.clone()));
+    if !p.proxy_addr.is_empty() {
+        map.insert(KEY_PROXY_ADDR, encode_proxy_addr(&p.proxy_addr));
+    }
 
     if let Some(d) = p.handshake_timeout {
         let ms = d.as_millis() as u64;
@@ -174,16 +271,16 @@ pub fn encode_compact_profile(
         omap.insert(KEY_OBF_S4, Value::Integer(o.s4.into()));
     }
     if !o.h1.is_empty() {
-        omap.insert(KEY_OBF_H1, Value::Text(o.h1.clone()));
+        omap.insert(KEY_OBF_H1, encode_header_spec(&o.h1));
     }
     if !o.h2.is_empty() {
-        omap.insert(KEY_OBF_H2, Value::Text(o.h2.clone()));
+        omap.insert(KEY_OBF_H2, encode_header_spec(&o.h2));
     }
     if !o.h3.is_empty() {
-        omap.insert(KEY_OBF_H3, Value::Text(o.h3.clone()));
+        omap.insert(KEY_OBF_H3, encode_header_spec(&o.h3));
     }
     if !o.h4.is_empty() {
-        omap.insert(KEY_OBF_H4, Value::Text(o.h4.clone()));
+        omap.insert(KEY_OBF_H4, encode_header_spec(&o.h4));
     }
     if !o.i1.is_empty() {
         omap.insert(KEY_OBF_I1, Value::Text(o.i1.clone()));
@@ -386,8 +483,8 @@ pub fn decode_compact_profile(
     if let Some(v) = get_kv(KEY_NAME).and_then(|v| v.as_text()) {
         out.name = v.to_string();
     }
-    if let Some(v) = get_kv(KEY_PROXY_ADDR).and_then(|v| v.as_text()) {
-        out.proxy_addr = v.to_string();
+    if let Some(v) = get_kv(KEY_PROXY_ADDR) {
+        out.proxy_addr = decode_proxy_addr(v);
     }
     if let Some(v) = get_kv(KEY_HANDSHAKE_TIMEOUT).and_then(|v| v.as_integer()) {
         let ms: u64 = v.try_into().unwrap_or_default();
@@ -486,17 +583,17 @@ pub fn decode_compact_profile(
         if let Some(sv) = get_ov(KEY_OBF_S4).and_then(|v| v.as_integer()) {
             o.s4 = sv.try_into().unwrap_or_default();
         }
-        if let Some(sv) = get_ov(KEY_OBF_H1).and_then(|v| v.as_text()) {
-            o.h1 = sv.to_string();
+        if let Some(sv) = get_ov(KEY_OBF_H1) {
+            o.h1 = decode_header_spec(sv);
         }
-        if let Some(sv) = get_ov(KEY_OBF_H2).and_then(|v| v.as_text()) {
-            o.h2 = sv.to_string();
+        if let Some(sv) = get_ov(KEY_OBF_H2) {
+            o.h2 = decode_header_spec(sv);
         }
-        if let Some(sv) = get_ov(KEY_OBF_H3).and_then(|v| v.as_text()) {
-            o.h3 = sv.to_string();
+        if let Some(sv) = get_ov(KEY_OBF_H3) {
+            o.h3 = decode_header_spec(sv);
         }
-        if let Some(sv) = get_ov(KEY_OBF_H4).and_then(|v| v.as_text()) {
-            o.h4 = sv.to_string();
+        if let Some(sv) = get_ov(KEY_OBF_H4) {
+            o.h4 = decode_header_spec(sv);
         }
         if let Some(sv) = get_ov(KEY_OBF_I1).and_then(|v| v.as_text()) {
             o.i1 = sv.to_string();
