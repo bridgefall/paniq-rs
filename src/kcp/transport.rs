@@ -525,8 +525,10 @@ async fn udp_send_loop(
         // Send to peer
         telemetry::record_udp_out(datagram.len());
         if let Err(e) = socket.send_to(&datagram, peer_addr).await {
-            error!("Failed to send transport packet: {}", e);
-            return;
+            error!("Failed to send transport packet to {}: {}", peer_addr, e);
+            // Don't terminate the loop; transient network errors (like ENETUNREACH)
+            // should not kill the server.
+            continue;
         }
     }
     info!("UDP send loop ended for {}", peer_addr);
@@ -587,8 +589,10 @@ async fn udp_send_loop_client(
         // Send to peer
         telemetry::record_udp_out(datagram.len());
         if let Err(e) = socket.send(&datagram).await {
-            error!("Failed to send transport packet: {}", e);
-            return;
+            error!("Failed to send transport packet to {}: {}", server_addr, e);
+            // Don't terminate the loop; transient network errors should not kill the client.
+            // KCP retransmissions will handle loss, and Android service will handle full reconnect.
+            continue;
         }
     }
     info!("UDP send loop ended for {}", server_addr);

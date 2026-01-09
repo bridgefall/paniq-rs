@@ -1547,7 +1547,9 @@ async fn run_kcp_engine_client(
             trace!(target: "paniq::transport_dump", direction = "tx", peer = %_server_addr, len = datagram.len(), msg_type = MessageType::Transport.into_u8(), hex = %hex::encode(&datagram));
             if let Err(e) = socket.send(&datagram).await {
                 error!("Failed to send transport packet: {}", e);
-                return Err(kcp_tokio::KcpError::protocol(e.to_string()));
+                // Return Ok to keep the engine running; KCP retransmissions will handle the loss.
+                // The Android service will trigger a full reconnect if the network stays down.
+                return Ok(());
             }
 
             Ok(())

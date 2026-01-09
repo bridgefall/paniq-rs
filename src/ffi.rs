@@ -47,7 +47,7 @@ pub fn encode_profile_to_cbor(json_profile: String) -> Result<String, PaniqError
 }
 
 /// Configuration for starting the daemon (simplified version for UniFFI).
-#[derive(uniffi::Record)]
+#[derive(uniffi::Record, Clone)]
 pub struct DaemonStartConfig {
     pub profile_path: String,
     pub listen_addr: String,
@@ -275,6 +275,7 @@ pub fn setup_logging(handler: Box<dyn PaniqLogHandler>, level: LogLevel) {
 #[derive(uniffi::Object)]
 pub struct PaniqDaemon {
     handle: Mutex<Option<SocksHandle>>,
+    last_config: Mutex<Option<DaemonStartConfig>>,
     runtime: tokio::runtime::Runtime,
 }
 
@@ -285,6 +286,7 @@ static DAEMON: Lazy<Arc<PaniqDaemon>> = Lazy::new(|| {
         .expect("Failed to create tokio runtime");
     Arc::new(PaniqDaemon {
         handle: Mutex::new(None),
+        last_config: Mutex::new(None),
         runtime,
     })
 });
@@ -297,6 +299,11 @@ pub fn get_daemon() -> Arc<PaniqDaemon> {
 #[uniffi::export]
 impl PaniqDaemon {
     pub fn start(&self, config: DaemonStartConfig) -> Result<(), PaniqError> {
+        // Store config for potential reconnection
+        if let Ok(mut last_config_guard) = self.last_config.try_lock() {
+            *last_config_guard = Some(config.clone());
+        }
+
         let mut handle_guard = self
             .handle
             .try_lock()
@@ -343,6 +350,25 @@ impl PaniqDaemon {
         *handle_guard = Some(handle);
 
         Ok(())
+    }
+
+    pub fn reconnect(&self) -> Result<(), PaniqError> {
+        let config = if let Ok(last_config_guard) = self.last_config.try_lock() {
+            last_config_guard.clone()
+        } else {
+            return Err(PaniqError::DaemonError {
+                err_msg: "Failed to access last config".to_string(),
+            });
+        };
+
+        if let Some(config) = config {
+            self.stop();
+            self.start(config)
+        } else {
+            Err(PaniqError::DaemonError {
+                err_msg: "No previous connection to reconnect".to_string(),
+            })
+        }
     }
 
     pub fn stop(&self) {
