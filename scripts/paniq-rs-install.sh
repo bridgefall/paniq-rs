@@ -135,6 +135,8 @@ download_release() {
 # Run install-debian.sh from the extracted archive
 run_installer() {
     local tmp_dir=$1
+    shift
+    local install_args=("$@")
 
     log_info "Running install-debian.sh..."
 
@@ -149,7 +151,7 @@ run_installer() {
 
     # Run the installer from the temp directory
     cd "$tmp_dir"
-    bash install-debian.sh
+    bash install-debian.sh "${install_args[@]}"
 }
 
 # Print installation summary
@@ -183,7 +185,7 @@ main() {
 
     # Download and install
     tmp_dir=$(download_release "$VERSION")
-    run_installer "$tmp_dir"
+    run_installer "$tmp_dir" "$@"
 
     # Cleanup
     rm -rf "$tmp_dir"

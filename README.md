@@ -162,6 +162,17 @@ export PANIQ_VERSION=v20260108-abc1234
 curl -fsSL https://raw.githubusercontent.com/bridgefall/paniq-rs/main/scripts/paniq-rs-install.sh | sudo bash
 ```
 
+**Update existing installation (binaries only):**
+```bash
+curl -fsSL https://raw.githubusercontent.com/bridgefall/paniq-rs/main/scripts/paniq-rs-install.sh | sudo bash -s -- --update
+```
+
+The `--update` flag will:
+- ✅ Update binaries to the latest version
+- ✅ Restart the service if it's running
+- ⏭️ Skip configuration regeneration (preserves your existing setup)
+- ⏭️ Skip profile and systemd unit creation
+
 ### Manual Installation
 
 If you prefer to install manually or build from source:
@@ -176,6 +187,9 @@ cd paniq-rs-VERSION-linux-amd64
 
 # Run the installer
 sudo bash install-debian.sh
+
+# Or update an existing installation (binaries only)
+sudo bash install-debian.sh --update
 ```
 
 #### Build from Source
