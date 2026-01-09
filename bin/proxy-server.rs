@@ -18,6 +18,9 @@ use tracing_subscriber::EnvFilter;
 
 const RELAY_BUFFER_SIZE: usize = 32 * 1024;
 
+const DRAIN_BUFFER_SIZE: usize = 1024;
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
@@ -198,13 +201,31 @@ async fn handle_stream(
         _ => return Err(format!("Unknown address type: {}", addr_type).into()),
     };
 
+    let target_str = format!("{:?}", target);
+
     let mut target_stream = match connect_target(target).await {
         Ok(stream) => {
             send.write_all(&[REPLY_SUCCESS]).await?;
             stream
         }
         Err(e) => {
+            tracing::warn!(target = %target_str, error = %e, "Failed to connect to target");
             let _ = send.write_all(&[REPLY_GENERAL_FAILURE]).await;
+
+            // Drain unread data from recv to avoid "bytes remaining on stream" error
+            // which kills the whole session in async_smux.
+            let mut drain_buf = [0u8; DRAIN_BUFFER_SIZE];
+            let _ = tokio::time::timeout(DRAIN_TIMEOUT, async {
+                loop {
+                    match recv.read(&mut drain_buf).await {
+                        Ok(0) => break,
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
+            })
+            .await;
+
             return Err(e);
         }
     };
@@ -315,6 +336,7 @@ async fn handle_stream(
     Ok(())
 }
 
+#[derive(Debug, Clone)]
 enum TargetSpec {
     Addr(SocketAddr),
     Domain(String, u16),
