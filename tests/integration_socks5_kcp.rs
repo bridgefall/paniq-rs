@@ -27,6 +27,7 @@ const SERVER_STARTUP_DELAY_MS: u64 = 100;
 const STREAM_SHUTDOWN_DELAY_MS: u64 = 10;
 
 // Longer delay for soak test cleanup (more active streams to shut down)
+#[cfg(feature = "slow-tests")]
 const SOAK_CLEANUP_DELAY_MS: u64 = 50;
 
 /// Simple HTTP server that returns "ok"
@@ -200,7 +201,7 @@ async fn integration_socks5_over_kcp() {
 }
 
 #[tokio::test]
-#[ignore]
+#[cfg(feature = "slow-tests")]
 async fn soak_socks5_over_kcp_30s() {
     // Test duration can be configured via SOAK_SECS env var (default: 10 seconds).
     // Note: Using production code paths creates connections much faster than the
@@ -365,7 +366,7 @@ async fn soak_socks5_over_kcp_30s() {
 }
 
 #[tokio::test]
-#[ignore]
+#[cfg(feature = "slow-tests")]
 async fn lifecycle_repeated_setup_teardown() {
     // Test repeated server setup/teardown to catch resource leaks.
     // This is separate from the soak test which reuses connections.

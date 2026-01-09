@@ -54,6 +54,7 @@ kcp = [
 ]
 socks5 = ["tokio", "dep:tracing-subscriber", "async-trait"]
 mobile = ["kcp", "socks5", "dep:uniffi", "dep:uniffi_macros"]
+slow-tests = []
 
 [dev-dependencies]
 rand_chacha = "0.3"

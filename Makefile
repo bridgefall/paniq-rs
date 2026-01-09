@@ -8,7 +8,9 @@ FEATURES_KCP := kcp
 FEATURES_SOCKS5 := socks5
 FEATURES_RCGEN :=
 FEATURES_ALL := kcp socks5
+FEATURES_SLOW := slow-tests
 FEATURES_FULL := --features "kcp,socks5"
+FEATURES_WITH_SLOW := --features "kcp,socks5,slow-tests"
 
 # Binaries
 BIN_PROXY_SERVER := proxy-server
@@ -79,8 +81,13 @@ test-integration: test-kcp
 
 .PHONY: test-all
 test-all:
-	@echo "$(COLOR_BLUE)Running all tests...$(COLOR_RESET)"
+	@echo "$(COLOR_BLUE)Running all tests (excluding slow tests)...$(COLOR_RESET)"
 	$(CARGO) test --all-targets $(FEATURES_FULL)
+
+.PHONY: test-slow
+test-slow:
+	@echo "$(COLOR_BLUE)Running all tests (including slow tests)...$(COLOR_RESET)"
+	$(CARGO) test --all-targets $(FEATURES_WITH_SLOW)
 
 # KCP-specific tests
 .PHONY: test-kcp
@@ -116,30 +123,30 @@ test-golden:
 .PHONY: test-soak
 test-soak:
 	@echo "$(COLOR_BLUE)Running soak tests ($(SOAK_SECS)s)...$(COLOR_RESET)"
-	$(CARGO) test --test $(TEST_INTEGRATION_KCP) --features "socks5,kcp" soak_socks5_over_kcp_30s -- --nocapture
+	$(CARGO) test --test $(TEST_INTEGRATION_KCP) --features "socks5,kcp,slow-tests" soak_socks5_over_kcp_30s -- --nocapture
 
 # Profiling benchmarks
 # These tests are designed to be run under a profiler (flamegraph, samply, perf)
 .PHONY: profile-build
 profile-build:
 	@echo "$(COLOR_BLUE)Building profiling benchmark...$(COLOR_RESET)"
-	$(CARGO) build --release --test profile_benchmark --features "socks5,kcp"
+	$(CARGO) build --release --test profile_benchmark --features "socks5,kcp,slow-tests"
 
 .PHONY: profile-run
 profile-run: profile-build
 	@echo "$(COLOR_BLUE)Running profiling benchmark...$(COLOR_RESET)"
-	$(CARGO) test --release --test profile_benchmark --features "socks5,kcp" profile_high_throughput -- --nocapture
+	$(CARGO) test --release --test profile_benchmark --features "socks5,kcp,slow-tests" profile_high_throughput -- --nocapture
 
 .PHONY: profile-single
 profile-single: profile-build
 	@echo "$(COLOR_BLUE)Running single-stream profiling benchmark...$(COLOR_RESET)"
-	$(CARGO) test --release --test profile_benchmark --features "socks5,kcp" profile_single_stream -- --nocapture
+	$(CARGO) test --release --test profile_benchmark --features "socks5,kcp,slow-tests" profile_single_stream -- --nocapture
 
 .PHONY: profile-flamegraph
 profile-flamegraph:
 	@echo "$(COLOR_BLUE)Running benchmark with flamegraph...$(COLOR_RESET)"
 	@echo "$(COLOR_YELLOW)Note: Requires 'cargo install flamegraph'. On macOS may need sudo.$(COLOR_RESET)"
-	$(CARGO) flamegraph --test profile_benchmark --features "socks5,kcp" -- profile_high_throughput --nocapture
+	$(CARGO) flamegraph --test profile_benchmark --features "socks5,kcp,slow-tests" -- profile_high_throughput --nocapture
 
 .PHONY: profile-samply
 profile-samply: profile-build
@@ -151,17 +158,17 @@ profile-samply: profile-build
 .PHONY: benchmark
 benchmark:
 	@echo "$(COLOR_BLUE)Running transfer benchmarks...$(COLOR_RESET)"
-	$(CARGO) test --release --test benchmark_transfer --features "socks5,kcp" -- --nocapture
+	$(CARGO) test --release --test benchmark_transfer --features "socks5,kcp,slow-tests" -- --nocapture
 
 .PHONY: benchmark-medium
 benchmark-medium:
 	@echo "$(COLOR_BLUE)Running medium transfer benchmark (50MB)...$(COLOR_RESET)"
-	$(CARGO) test --release --test benchmark_transfer --features "socks5,kcp" benchmark_transfer_medium -- --nocapture
+	$(CARGO) test --release --test benchmark_transfer --features "socks5,kcp,slow-tests" benchmark_transfer_medium -- --nocapture
 
 .PHONY: benchmark-large
 benchmark-large:
 	@echo "$(COLOR_BLUE)Running large transfer benchmark (100MB)...$(COLOR_RESET)"
-	$(CARGO) test --release --test benchmark_transfer --features "socks5,kcp" benchmark_transfer_large -- --nocapture --ignored
+	$(CARGO) test --release --test benchmark_transfer --features "socks5,kcp,slow-tests" benchmark_transfer_large -- --nocapture
 
 # Test with verbose output
 .PHONY: test-verbose

@@ -12,6 +12,7 @@
 
 #![cfg(feature = "socks5")]
 #![cfg(feature = "kcp")]
+#![cfg(feature = "slow-tests")]
 
 mod support;
 
@@ -214,7 +215,7 @@ async fn transfer_loop(
 /// This test runs multiple concurrent streams for a fixed duration,
 /// maximizing CPU usage for profiling.
 #[tokio::test]
-#[ignore]
+#[cfg(feature = "slow-tests")]
 async fn profile_high_throughput() {
     println!("\n=== High-Throughput Profiling Benchmark ===");
     println!(
@@ -306,7 +307,7 @@ async fn profile_high_throughput() {
 
 /// Single-stream profiling for easier analysis
 #[tokio::test]
-#[ignore]
+#[cfg(feature = "slow-tests")]
 async fn profile_single_stream() {
     println!("\n=== Single-Stream Profiling Benchmark ===");
     println!("Transfer size: {} MB", PROFILE_TRANSFER_SIZE / BYTES_PER_MB);

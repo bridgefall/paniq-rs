@@ -21,8 +21,11 @@ use support::StackHarness;
 
 /// Test file sizes for benchmarking (in bytes)
 const BYTES_PER_MB: usize = 1024 * 1024;
+#[cfg(feature = "slow-tests")]
 const TEST_SIZE_SMALL: usize = 10 * BYTES_PER_MB; // 10 MB
+#[cfg(feature = "slow-tests")]
 const TEST_SIZE_MEDIUM: usize = 50 * BYTES_PER_MB; // 50 MB
+#[cfg(feature = "slow-tests")]
 const TEST_SIZE_LARGE: usize = 100 * BYTES_PER_MB; // 100 MB
 
 /// Connection timeout for benchmark tests
@@ -369,7 +372,7 @@ async fn run_benchmark(
 }
 
 #[tokio::test]
-#[ignore] // Run this manually: cargo test --release --features kcp,socks5 benchmark_transfer_small -- --ignored
+#[cfg(feature = "slow-tests")]
 async fn benchmark_transfer_small() {
     run_benchmark("Small File Transfer", TEST_SIZE_SMALL, 3)
         .await
@@ -377,7 +380,7 @@ async fn benchmark_transfer_small() {
 }
 
 #[tokio::test]
-#[ignore]
+#[cfg(feature = "slow-tests")]
 async fn benchmark_transfer_medium() {
     run_benchmark("Medium File Transfer", TEST_SIZE_MEDIUM, 3)
         .await
@@ -385,7 +388,7 @@ async fn benchmark_transfer_medium() {
 }
 
 #[tokio::test]
-#[ignore] // Run this manually: cargo test --release --features kcp,socks5 benchmark_transfer_large -- --ignored
+#[cfg(feature = "slow-tests")]
 async fn benchmark_transfer_large() {
     run_benchmark("Large File Transfer", TEST_SIZE_LARGE, 3)
         .await
