@@ -30,3 +30,6 @@ fuzz/target/
 e2e-logs/
 *.remote.json
 *.local.json
+
+# Build distributions
+dist/

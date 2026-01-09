@@ -106,18 +106,91 @@ jobs:
           path: dist/paniq-rs-${{ steps.meta.outputs.tag }}-linux-amd64.tar.gz
           retention-days: 90
 
+  build-android:
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.workflow_run.head_sha }}
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi
+
+      - name: Set up Android NDK
+        run: |
+          # Use the latest available NDK version on the runner
+          NDK_PATH=$(ls -d ${ANDROID_SDK_ROOT}/ndk/* | tail -1)
+          echo "ANDROID_NDK_HOME=${NDK_PATH}" >> $GITHUB_ENV
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build Android Libraries
+        run: make build-android
+
+      - name: Build Linux Library (for UniFFI gen)
+        run: cargo build --release --features mobile
+
+      - name: Generate UniFFI Bindings
+        run: make uniffi-gen-kotlin
+
+      - name: Release metadata
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(date -u +'%Y%m%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package Android Artifacts
+        run: |
+          cd dist/android
+          tar czf ../../paniq-rs-${{ steps.meta.outputs.tag }}-android.tar.gz jniLibs kotlin
+
+      - name: Upload Android Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: paniq-rs-android
+          path: paniq-rs-${{ steps.meta.outputs.tag }}-android.tar.gz
+
+  release:
+    needs: [build-linux, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: paniq-rs-linux-amd64
+          path: dist-linux
+
+      - name: Download Android Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: paniq-rs-android
+          path: dist-android
+
+      - name: Release metadata
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(date -u +'%Y%m%d')-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: ${{ steps.meta.outputs.tag }}
           files: |
-            dist/paniq-rs-proxy
-            dist/paniq-rs-socks5d
-            dist/paniq-rs-ctl
-            dist/install-debian.sh
-            dist/SHA256SUMS
-            dist/paniq-rs-${{ steps.meta.outputs.tag }}-linux-amd64.tar.gz
+            dist-linux/*.tar.gz
+            dist-android/*.tar.gz
           generate_release_notes: true
           draft: false
           prerelease: false

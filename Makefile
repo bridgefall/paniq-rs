@@ -350,3 +350,14 @@ run-proxy-server: build
 run-socks5d: build
 	@echo "$(COLOR_BLUE)Running socks5d...$(COLOR_RESET)"
 	$(TARGET_DEBUG)/$(BIN_SOCKS5D) --profile test_profile_gen.json
+# Target to build Android libraries
+.PHONY: build-android
+build-android:
+	@echo "$(COLOR_BLUE)Building Android libraries...$(COLOR_RESET)"
+	cargo ndk -t arm64-v8a -t armeabi-v7a -o dist/android/jniLibs build --release --features mobile
+
+# Target to generate UniFFI Kotlin bindings
+.PHONY: uniffi-gen-kotlin
+uniffi-gen-kotlin:
+	@echo "$(COLOR_BLUE)Generating UniFFI Kotlin bindings...$(COLOR_RESET)"
+	cargo run --bin uniffi-bindgen --features mobile generate --library target/release/libpaniq.so --language kotlin --out-dir dist/android/kotlin
