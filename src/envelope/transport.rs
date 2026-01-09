@@ -43,6 +43,46 @@ pub fn build_transport_payload<R: RngCore>(
     Ok(out)
 }
 
+/// Build transport payload into a provided buffer to avoid allocation.
+/// The buffer is cleared and resized as needed.
+#[inline]
+pub fn build_transport_payload_into<R: RngCore>(
+    payload: &[u8],
+    counter: Option<u64>,
+    padding: &PaddingPolicy,
+    max_payload: usize,
+    rng: &mut R,
+    out: &mut Vec<u8>,
+) -> Result<(), EnvelopeError> {
+    if payload.len() > u16::MAX as usize {
+        telemetry::record_transport_payload_too_large();
+        return Err(EnvelopeError::PayloadTooLarge);
+    }
+    let pad_len = padding.padding_len(payload.len(), max_payload, rng);
+    if payload.len() + pad_len + LEN_SIZE + counter.map(|_| COUNTER_SIZE).unwrap_or(0) > max_payload
+    {
+        telemetry::record_transport_payload_too_large();
+        return Err(EnvelopeError::PayloadTooLarge);
+    }
+
+    out.clear();
+    let total_len = counter.map(|_| COUNTER_SIZE).unwrap_or(0) + LEN_SIZE + payload.len() + pad_len;
+    out.reserve(total_len);
+
+    if let Some(counter) = counter {
+        out.extend_from_slice(&counter.to_be_bytes());
+    }
+    out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+    out.extend_from_slice(payload);
+    if pad_len > 0 {
+        let start = out.len();
+        out.resize(start + pad_len, 0);
+        rng.fill_bytes(&mut out[start..]);
+    }
+    telemetry::record_transport_out(payload.len(), pad_len, out.len());
+    Ok(())
+}
+
 pub fn decode_transport_payload<F>(
     data: &[u8],
     expect_counter: bool,

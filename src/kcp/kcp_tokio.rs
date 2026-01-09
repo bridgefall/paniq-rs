@@ -21,7 +21,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::envelope::client::{client_handshake_async, TokioPacketConn};
 use crate::envelope::padding::PaddingPolicy;
-use crate::envelope::transport::{build_transport_payload, decode_transport_payload};
+use crate::envelope::transport::decode_transport_payload;
 use crate::kcp::mux::KcpStreamAdapter;
 use crate::obf::{Framer, MessageType, SharedRng};
 use crate::telemetry;
@@ -882,44 +882,44 @@ async fn run_kcp_engine_server(
         let counter = counter_clone.clone();
 
         Box::pin(async move {
+            // Reusable buffers - these get allocated once per packet but the capacity is reused
+            let mut payload_buf = Vec::with_capacity(config.max_payload);
+            let mut datagram_buf = Vec::with_capacity(config.max_payload + 256);
+
             // Build transport payload with counter and padding
             let replay_counter = if config.transport_replay {
                 Some(counter.fetch_add(1, Ordering::SeqCst))
             } else {
                 None
             };
-            let payload = {
+
+            // Hold RNG lock once for both operations
+            {
                 let mut rng_guard = framer.rng().0.lock().unwrap();
-                build_transport_payload(
+
+                if let Err(e) = crate::envelope::transport::build_transport_payload_into(
                     kcp_bytes.as_ref(),
                     replay_counter,
                     &config.padding_policy,
                     config.max_payload,
                     &mut *rng_guard,
-                )
-            };
-
-            let payload = match payload {
-                Ok(p) => p,
-                Err(e) => {
+                    &mut payload_buf,
+                ) {
                     error!("Failed to build transport payload: {}", e);
                     return Err(kcp_tokio::KcpError::protocol(e.to_string()));
                 }
-            };
+            }
 
-            // Encode as Transport frame
-            let datagram = match framer.encode_frame(MessageType::Transport, &payload) {
-                Ok(d) => d,
-                Err(e) => {
-                    error!("Failed to encode transport frame: {}", e);
-                    return Err(kcp_tokio::KcpError::protocol(e.to_string()));
-                }
-            };
+            // Encode as Transport frame (framer uses its own RNG internally)
+            if let Err(e) = framer.encode_frame_into(MessageType::Transport, &payload_buf, &mut datagram_buf) {
+                error!("Failed to encode transport frame: {}", e);
+                return Err(kcp_tokio::KcpError::protocol(e.to_string()));
+            }
 
             // Send to peer
-            telemetry::record_udp_out(datagram.len());
-            trace!(target: "paniq::transport_dump", direction = "tx", peer = %peer_addr, len = datagram.len(), msg_type = MessageType::Transport.into_u8(), hex = %hex::encode(&datagram));
-            if let Err(e) = socket.send_to(&datagram, peer_addr).await {
+            telemetry::record_udp_out(datagram_buf.len());
+            trace!(target: "paniq::transport_dump", direction = "tx", peer = %peer_addr, len = datagram_buf.len(), msg_type = MessageType::Transport.into_u8(), hex = %hex::encode(&datagram_buf));
+            if let Err(e) = socket.send_to(&datagram_buf, peer_addr).await {
                 error!("Failed to send transport packet: {}", e);
                 return Err(kcp_tokio::KcpError::protocol(e.to_string()));
             }
@@ -1418,47 +1418,46 @@ async fn run_kcp_engine_client(
         let counter = counter_clone.clone();
 
         Box::pin(async move {
+            // Reusable buffers
+            let mut payload_buf = Vec::with_capacity(config.max_payload);
+            let mut datagram_buf = Vec::with_capacity(config.max_payload + 256);
+
             // Build transport payload with counter and padding
             let replay_counter = if config.transport_replay {
                 Some(counter.fetch_add(1, Ordering::SeqCst))
             } else {
                 None
             };
-            let payload = {
+
+            // Hold RNG lock once for transport encoding
+            {
                 let mut rng_guard = framer.rng().0.lock().unwrap();
-                build_transport_payload(
+
+                if let Err(e) = crate::envelope::transport::build_transport_payload_into(
                     kcp_bytes.as_ref(),
                     replay_counter,
                     &config.padding_policy,
                     config.max_payload,
                     &mut *rng_guard,
-                )
-            };
-
-            let payload = match payload {
-                Ok(p) => p,
-                Err(e) => {
+                    &mut payload_buf,
+                ) {
                     error!("Failed to build transport payload: {}", e);
                     return Err(kcp_tokio::KcpError::protocol(e.to_string()));
                 }
-            };
+            }
 
-            // Encode as Transport frame
-            let datagram = match framer.encode_frame(MessageType::Transport, &payload) {
-                Ok(d) => d,
-                Err(e) => {
-                    error!("Failed to encode transport frame: {}", e);
-                    return Err(kcp_tokio::KcpError::protocol(e.to_string()));
-                }
-            };
+            // Encode as Transport frame (framer uses its own RNG internally)
+            if let Err(e) = framer.encode_frame_into(MessageType::Transport, &payload_buf, &mut datagram_buf) {
+                error!("Failed to encode transport frame: {}", e);
+                return Err(kcp_tokio::KcpError::protocol(e.to_string()));
+            }
 
             // Send to peer
-            telemetry::record_udp_out(datagram.len());
-            trace!(target: "paniq::transport_dump", direction = "tx", peer = %_server_addr, len = datagram.len(), msg_type = MessageType::Transport.into_u8(), hex = %hex::encode(&datagram));
-            if let Err(e) = socket.send(&datagram).await {
+            telemetry::record_udp_out(datagram_buf.len());
+            trace!(target: "paniq::transport_dump", direction = "tx", peer = %_server_addr, len = datagram_buf.len(), msg_type = MessageType::Transport.into_u8(), hex = %hex::encode(&datagram_buf));
+            if let Err(e) = socket.send(&datagram_buf).await {
                 error!("Failed to send transport packet: {}", e);
                 // Return Ok to keep the engine running; KCP retransmissions will handle the loss.
-                // The Android service will trigger a full reconnect if the network stays down.
                 return Ok(());
             }
 

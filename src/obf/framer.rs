@@ -107,6 +107,37 @@ impl Framer {
         Ok(datagram)
     }
 
+    /// Encode frame into a provided buffer to avoid allocation.
+    /// The buffer is cleared and resized as needed.
+    #[inline]
+    pub fn encode_frame_into(
+        &self,
+        msg_type: MessageType,
+        payload: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), FramerError> {
+        let padding = self.padding_for(msg_type);
+        let header = self
+            .header_for(msg_type)
+            .ok_or(FramerError::MissingHeader(msg_type as i32))?;
+        if padding < 0 {
+            return Err(FramerError::InvalidPadding);
+        }
+
+        out.clear();
+        let pad_len = padding as usize;
+        let total_len = pad_len + FRAME_HEADER_LEN + payload.len();
+        out.reserve(total_len);
+
+        if pad_len > 0 {
+            out.resize(pad_len, 0);
+            self.rng.fill_bytes(&mut out[..pad_len]);
+        }
+        out.extend_from_slice(&header.generate().to_le_bytes());
+        out.extend_from_slice(payload);
+        Ok(())
+    }
+
     pub fn decode_frame(&self, datagram: &[u8]) -> Result<(MessageType, Vec<u8>), FramerError> {
         if datagram.len() < FRAME_HEADER_LEN {
             return Err(FramerError::FrameTooShort);
