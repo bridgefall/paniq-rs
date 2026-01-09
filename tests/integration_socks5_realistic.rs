@@ -139,7 +139,8 @@ async fn wait_for_socks_ready(
                 request.extend_from_slice(&target_addr.port().to_be_bytes());
                 stream.write_all(&request).await?;
 
-                read_socks5_reply(&mut stream).await?;
+                // Add timeout to prevent hanging
+                timeout(Duration::from_secs(2), read_socks5_reply(&mut stream)).await??;
                 return Ok(());
             }
             Err(err) => {

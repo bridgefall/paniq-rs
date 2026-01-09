@@ -21,10 +21,7 @@ use support::StackHarness;
 
 /// Test file sizes for benchmarking (in bytes)
 const BYTES_PER_MB: usize = 1024 * 1024;
-#[cfg(feature = "slow-tests")]
-const TEST_SIZE_SMALL: usize = 10 * BYTES_PER_MB; // 10 MB
-#[cfg(feature = "slow-tests")]
-const TEST_SIZE_MEDIUM: usize = 50 * BYTES_PER_MB; // 50 MB
+
 #[cfg(feature = "slow-tests")]
 const TEST_SIZE_LARGE: usize = 100 * BYTES_PER_MB; // 100 MB
 
@@ -369,22 +366,6 @@ async fn run_benchmark(
     http_handle.abort();
 
     Ok(())
-}
-
-#[tokio::test]
-#[cfg(feature = "slow-tests")]
-async fn benchmark_transfer_small() {
-    run_benchmark("Small File Transfer", TEST_SIZE_SMALL, 3)
-        .await
-        .expect("Benchmark failed");
-}
-
-#[tokio::test]
-#[cfg(feature = "slow-tests")]
-async fn benchmark_transfer_medium() {
-    run_benchmark("Medium File Transfer", TEST_SIZE_MEDIUM, 3)
-        .await
-        .expect("Benchmark failed");
 }
 
 #[tokio::test]

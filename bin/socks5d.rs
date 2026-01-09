@@ -193,9 +193,14 @@ impl PaniqConnector {
 
 #[async_trait::async_trait]
 impl RelayConnector for PaniqConnector {
-    async fn connect(&self, target: &TargetAddr) -> Result<Box<dyn IoStream + Send>, SocksError> {
+    async fn connect(
+        &self,
+        target: &TargetAddr,
+        cmd: u8,
+    ) -> Result<Box<dyn IoStream + Send>, SocksError> {
         let mut buf = Vec::new();
         buf.push(PROTOCOL_VERSION);
+        buf.push(cmd);
 
         let port = match target {
             TargetAddr::Ip(addr) => {

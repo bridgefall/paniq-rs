@@ -41,8 +41,9 @@ async fn sdk_direct_usage_roundtrip() {
     let mut stream = client.open_stream().await.expect("Failed to open stream");
 
     // Write something that isn't a valid version to see if proxy reacts
+    // Protocol expects 2 bytes: version + command
     stream
-        .write_all(&[0xFF])
+        .write_all(&[0xFF, 0x00])
         .await
         .expect("Failed to write to stream");
 

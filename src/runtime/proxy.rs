@@ -4,6 +4,7 @@
 //! allowing the server to be started and stopped programmatically.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use crate::kcp::server::{listen, ServerConfigWrapper};
 use crate::obf::Framer;
@@ -22,7 +23,7 @@ use tracing::{info, warn};
 
 /// Relay buffer size for bidirectional data transfer (32 KB).
 /// Chosen to balance throughput vs memory per stream.
-const RELAY_BUFFER_SIZE: usize = 32768;
+use crate::io::{is_expected_close_error, DEFAULT_RELAY_BUFFER_SIZE as RELAY_BUFFER_SIZE};
 
 // ===== Default Configuration Values =====
 
@@ -187,9 +188,9 @@ async fn handle_connection(
     loop {
         // Accept new bidirectional stream
         match server_conn.accept_bi().await {
-            Ok((mut send, mut recv)) => {
+            Ok((send, recv)) => {
                 tokio::spawn(async move {
-                    if let Err(e) = handle_stream(&mut send, &mut recv).await {
+                    if let Err(e) = handle_stream(send, recv).await {
                         warn!(error = %e, "Error handling stream");
                     }
                 });
@@ -207,15 +208,16 @@ async fn handle_connection(
 ///
 /// This implements the custom proxy protocol used between socks5d and proxy-server.
 async fn handle_stream(
-    send: &mut crate::kcp::client::SendStream,
-    recv: &mut crate::kcp::client::RecvStream,
+    mut send: crate::kcp::client::SendStream,
+    mut recv: crate::kcp::client::RecvStream,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    // Read protocol version and target address
-    let mut buf = [0u8; 1];
+    // Read protocol version and command
+    let mut buf = [0u8; 2];
     recv.read_exact(&mut buf).await?;
     let version = buf[0];
+    let cmd = buf[1];
 
     if version != PROTOCOL_VERSION {
         return Err(format!("Unsupported protocol version: {}", version).into());
@@ -228,7 +230,6 @@ async fn handle_stream(
 
     let target = match addr_type {
         ADDR_TYPE_IPV4 => {
-            // IPv4
             let mut addr_buf = [0u8; IPV4_ADDR_SIZE];
             recv.read_exact(&mut addr_buf).await?;
             let mut port_buf = [0u8; PORT_SIZE];
@@ -237,7 +238,6 @@ async fn handle_stream(
             TargetSpec::Addr(SocketAddr::new(std::net::IpAddr::V4(addr_buf.into()), port))
         }
         ADDR_TYPE_DOMAIN => {
-            // Domain
             let mut len_buf = [0u8; DOMAIN_LEN_SIZE];
             recv.read_exact(&mut len_buf).await?;
             let len = len_buf[0] as usize;
@@ -250,7 +250,6 @@ async fn handle_stream(
             TargetSpec::Domain(domain, port)
         }
         ADDR_TYPE_IPV6 => {
-            // IPv6
             let mut addr_buf = [0u8; IPV6_ADDR_SIZE];
             recv.read_exact(&mut addr_buf).await?;
             let mut port_buf = [0u8; PORT_SIZE];
@@ -260,6 +259,10 @@ async fn handle_stream(
         }
         _ => return Err(format!("Unknown address type: {}", addr_type).into()),
     };
+
+    if cmd == crate::proxy_protocol::CMD_UDP_ASSOCIATE {
+        return handle_udp_associate(send, recv, target).await;
+    }
 
     let mut target_stream = match connect_target(target).await {
         Ok(stream) => {
@@ -274,34 +277,9 @@ async fn handle_stream(
         }
     };
 
-    // Bidirectional relay with optimized buffer sizes for high throughput.
-    // RELAY_BUFFER_SIZE (32KB) reduces syscalls and improves throughput vs 8KB.
-    //
-    // Both directions run concurrently and must complete for cleanup.
-    // Expected errors (BrokenPipe, ConnectionReset, NotConnected, ConnectionAborted)
-    // are converted to Ok(()) so they don't cause try_join! to fail early.
     let (mut target_read, mut target_write) = target_stream.split();
 
-    // Check if an error represents an expected connection close.
-    // Includes standard IO errors and smux-specific errors.
-    fn is_expected_close_error(e: &std::io::Error) -> bool {
-        // Check standard error kinds
-        if matches!(
-            e.kind(),
-            std::io::ErrorKind::BrokenPipe
-                | std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::NotConnected
-                | std::io::ErrorKind::ConnectionAborted
-        ) {
-            return true;
-        }
-        // Check for smux-specific errors (async-smux returns these as io::Error)
-        let error_msg = e.to_string().to_lowercase();
-        error_msg.contains("tx is already closed")
-            || error_msg.contains("rx is already closed")
-            || error_msg.contains("stream is closed")
-            || error_msg.contains("connection closed")
-    }
+    // Bidirectional relay with optimized buffer sizes for high throughput.
 
     let client_to_target = async {
         let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
@@ -357,10 +335,98 @@ async fn handle_stream(
         Ok::<(), std::io::Error>(())
     };
 
-    // try_join! ensures both directions complete (for cleanup) while
-    // propagating unexpected errors. Expected close errors are converted
-    // to Ok(()) above, so they don't cause early cancellation.
     tokio::try_join!(client_to_target, target_to_client)?;
+    Ok(())
+}
+
+async fn handle_udp_associate(
+    mut send: crate::kcp::client::SendStream,
+    recv: crate::kcp::client::RecvStream,
+    _target: TargetSpec,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UdpSocket;
+
+    let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+
+    // Send success reply
+    send.write_all(&[REPLY_SUCCESS]).await?;
+
+    let socket_send = socket.clone();
+
+    // Stream to UDP
+    let mut recv_udp = recv;
+    let stream_to_udp = async move {
+        let mut len_buf = [0u8; 2];
+        loop {
+            if let Err(e) = recv_udp.read_exact(&mut len_buf).await {
+                if is_expected_close_error(&e) {
+                    break;
+                }
+                return Err(e);
+            }
+            let len = u16::from_be_bytes(len_buf) as usize;
+
+            // Security: Enforce maximum packet size (RELAY_BUFFER_SIZE + SOCKS5 overhead)
+            if len > RELAY_BUFFER_SIZE + 512 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "UDP packet too large",
+                ));
+            }
+
+            let mut packet = vec![0u8; len];
+            recv_udp.read_exact(&mut packet).await?;
+
+            // Packet contains SOCKS5 UDP header + payload
+            match fast_socks5::parse_udp_request(&packet).await {
+                Ok((_frag, target_addr, payload)) => {
+                    let addr = match target_addr {
+                        fast_socks5::util::target_addr::TargetAddr::Ip(addr) => addr,
+                        fast_socks5::util::target_addr::TargetAddr::Domain(domain, port) => {
+                            match tokio::net::lookup_host((domain.as_str(), port)).await {
+                                Ok(mut addrs) => addrs.next().unwrap_or(SocketAddr::new(
+                                    std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                                    0,
+                                )),
+                                Err(_) => continue,
+                            }
+                        }
+                    };
+                    let _ = socket_send.send_to(payload, addr).await;
+                }
+                Err(_) => continue,
+            }
+        }
+        Ok::<(), std::io::Error>(())
+    };
+
+    // UDP to Stream
+    let mut send_udp = send;
+    let socket_recv = socket.clone();
+    let udp_to_stream = async move {
+        let mut buf = vec![0u8; RELAY_BUFFER_SIZE];
+        loop {
+            match socket_recv.recv_from(&mut buf).await {
+                Ok((n, peer)) => {
+                    // Create SOCKS5 UDP header
+                    let header =
+                        fast_socks5::new_udp_header(peer).map_err(std::io::Error::other)?;
+                    let total_len = header.len() + n;
+                    send_udp
+                        .write_all(&(total_len as u16).to_be_bytes())
+                        .await?;
+                    send_udp.write_all(&header).await?;
+                    send_udp.write_all(&buf[..n]).await?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), std::io::Error>(())
+    };
+
+    tokio::try_join!(stream_to_udp, udp_to_stream)?;
     Ok(())
 }
 

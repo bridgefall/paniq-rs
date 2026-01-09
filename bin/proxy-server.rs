@@ -152,10 +152,11 @@ async fn handle_stream(
     send: &mut paniq::kcp::client::SendStream,
     recv: &mut paniq::kcp::client::RecvStream,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Read protocol version and target address
-    let mut buf = [0u8; 1];
+    // Read protocol version and command
+    let mut buf = [0u8; 2];
     recv.read_exact(&mut buf).await?;
     let version = buf[0];
+    let _cmd = buf[1]; // Command byte (currently unused but required by protocol)
 
     if version != PROTOCOL_VERSION {
         return Err(format!("Unsupported protocol version: {}", version).into());

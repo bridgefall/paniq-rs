@@ -2,7 +2,7 @@
 pub mod client;
 pub mod config;
 pub mod envelope;
-#[cfg(feature = "kcp")]
+#[cfg(any(feature = "kcp", feature = "socks5"))]
 pub mod io;
 pub mod obf;
 pub mod profile;

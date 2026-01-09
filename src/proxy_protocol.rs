@@ -1,5 +1,8 @@
 pub const PROTOCOL_VERSION: u8 = 0x01;
 
+pub const CMD_CONNECT: u8 = 0x01;
+pub const CMD_UDP_ASSOCIATE: u8 = 0x03;
+
 pub const ADDR_TYPE_IPV4: u8 = 0x01;
 pub const ADDR_TYPE_DOMAIN: u8 = 0x03;
 pub const ADDR_TYPE_IPV6: u8 = 0x04;

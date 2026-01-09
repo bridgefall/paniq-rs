@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use crate::io::is_expected_close_error;
 use async_trait::async_trait;
 use fast_socks5::consts::{
     SOCKS5_ADDR_TYPE_IPV4, SOCKS5_REPLY_ADDRESS_TYPE_NOT_SUPPORTED,
@@ -11,6 +12,7 @@ use fast_socks5::server::{
     AcceptAuthentication, Authentication, Config as FastConfig, Socks5Socket,
 };
 use fast_socks5::util::target_addr as fast_target;
+use fast_socks5::Socks5Command;
 use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -66,14 +68,14 @@ pub enum TargetAddr {
 
 #[async_trait]
 pub trait RelayConnector: Send + Sync {
-    async fn connect(&self, target: &TargetAddr) -> Result<BoxedStream, SocksError>;
+    async fn connect(&self, target: &TargetAddr, cmd: u8) -> Result<BoxedStream, SocksError>;
 }
 
 pub struct TcpConnector;
 
 #[async_trait]
 impl RelayConnector for TcpConnector {
-    async fn connect(&self, target: &TargetAddr) -> Result<BoxedStream, SocksError> {
+    async fn connect(&self, target: &TargetAddr, _cmd: u8) -> Result<BoxedStream, SocksError> {
         let addr = match target {
             TargetAddr::Ip(addr) => *addr,
             TargetAddr::Domain(host, port) => {
@@ -142,16 +144,55 @@ impl<C: RelayConnector> Socks5Server<C> {
             .await
             .map_err(|e| SocksError::Protocol(e.to_string()))?;
 
-        let target = map_target(socket.target_addr().cloned())?;
-        tracing::debug!(target = ?target, "Connecting to target");
-        let remote = self.connector.connect(&target).await?;
-        tracing::info!("Connected to target, sending success reply");
+        let cmd_enum = socket.cmd().as_ref().unwrap_or(&Socks5Command::TCPConnect);
+        let cmd_byte = match cmd_enum {
+            Socks5Command::TCPConnect => crate::proxy_protocol::CMD_CONNECT,
+            Socks5Command::UDPAssociate => crate::proxy_protocol::CMD_UDP_ASSOCIATE,
+            _ => {
+                return Err(SocksError::UnsupportedCommand(0));
+            }
+        };
 
+        let target = map_target(socket.target_addr().cloned())?;
+        tracing::debug!(target = ?target, command = ?cmd_enum, "Connecting to target");
+        let remote = self.connector.connect(&target, cmd_byte).await?;
+
+        if cmd_enum == &Socks5Command::UDPAssociate {
+            return self.handle_udp_associate(socket, remote).await;
+        }
+
+        tracing::info!("Connected to target, sending success reply");
         send_success_reply(&mut socket, &target).await?;
         tracing::info!("Success reply sent, starting relay");
 
         let _guard = crate::telemetry::ConnectionGuard::new();
         relay_bidirectional(socket, remote, self.relay_buffer_size).await
+    }
+
+    async fn handle_udp_associate<S, A>(
+        &self,
+        mut socket: Socks5Socket<S, A>,
+        remote: BoxedStream,
+    ) -> Result<(), SocksError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        A: Authentication + Send + Sync + 'static,
+        A::Item: Send,
+    {
+        use tokio::net::UdpSocket;
+
+        let udp_relay = UdpSocket::bind("127.0.0.1:0")
+            .await
+            .map_err(SocksError::Io)?;
+        let local_addr = udp_relay.local_addr().map_err(SocksError::Io)?;
+
+        tracing::info!(relay_addr = %local_addr, "UDP Associate relay bound");
+
+        // Success reply with local UDP relay address
+        send_success_reply(&mut socket, &TargetAddr::Ip(local_addr)).await?;
+
+        // Relay UDP <-> Stream
+        relay_udp_over_stream(udp_relay, remote, self.relay_buffer_size).await
     }
 }
 
@@ -178,6 +219,7 @@ fn build_auth_config(auth: &AuthConfig) -> Result<FastConfig<MapAuth>, SocksErro
     config.set_execute_command(false);
     config.set_dns_resolve(false);
     config.set_allow_no_auth(false);
+    config.set_udp_support(true);
 
     Ok(config.with_authentication(MapAuth {
         users: auth.users.clone(),
@@ -189,6 +231,7 @@ fn build_noauth_config() -> FastConfig<AcceptAuthentication> {
     config.set_execute_command(false);
     config.set_dns_resolve(false);
     config.set_allow_no_auth(true);
+    config.set_udp_support(true);
     config
 }
 
@@ -204,22 +247,8 @@ fn default_relay_buffer_size() -> usize {
     crate::profile::KcpConfig::default().max_payload
 }
 
-fn is_expected_close_error(e: &std::io::Error) -> bool {
-    matches!(
-        e.kind(),
-        std::io::ErrorKind::BrokenPipe
-            | std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::NotConnected
-            | std::io::ErrorKind::ConnectionAborted
-    ) || {
-        let error_msg = e.to_string().to_lowercase();
-        error_msg.contains("tx is already closed")
-            || error_msg.contains("rx is already closed")
-            || error_msg.contains("stream is closed")
-            || error_msg.contains("connection closed")
-    }
-}
-
+/// smux session) should be handled via Smux error parsing or similar.
+/// Update: moved to crate::io.
 async fn send_success_reply<S>(stream: &mut S, target: &TargetAddr) -> Result<(), SocksError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -362,6 +391,79 @@ where
     }
 }
 
+async fn relay_udp_over_stream<R>(
+    socket: tokio::net::UdpSocket,
+    stream: R,
+    relay_buffer_size: usize,
+) -> Result<(), SocksError>
+where
+    R: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::Mutex;
+
+    let socket = Arc::new(socket);
+    let (mut stream_read, mut stream_write) = tokio::io::split(stream);
+    let client_addr = Arc::new(Mutex::new(None));
+
+    let socket_send = socket.clone();
+    let client_addr_send = client_addr.clone();
+    let stream_to_udp = async move {
+        let mut len_buf = [0u8; 2];
+        loop {
+            if let Err(e) = stream_read.read_exact(&mut len_buf).await {
+                if is_expected_close_error(&e) {
+                    break;
+                }
+                return Err(e);
+            }
+            let len = u16::from_be_bytes(len_buf) as usize;
+
+            // Security: Enforce maximum packet size (relay_buffer_size + SOCKS5 overhead)
+            if len > relay_buffer_size + 512 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "UDP packet too large",
+                ));
+            }
+
+            let mut packet = vec![0u8; len];
+            stream_read.read_exact(&mut packet).await?;
+
+            // Pulse client_addr to know where to send back
+            let peer = client_addr_send.lock().await;
+            if let Some(target) = *peer {
+                let _ = socket_send.send_to(&packet, target).await;
+            }
+        }
+        Ok::<(), std::io::Error>(())
+    };
+
+    let socket_recv = socket.clone();
+    let client_addr_recv = client_addr.clone();
+    let udp_to_stream = async move {
+        let mut buf = vec![0u8; relay_buffer_size];
+        loop {
+            match socket_recv.recv_from(&mut buf).await {
+                Ok((n, peer)) => {
+                    // Remember client address
+                    *client_addr_recv.lock().await = Some(peer);
+
+                    // Forward client packet (header + payload) to stream
+                    stream_write.write_all(&(n as u16).to_be_bytes()).await?;
+                    stream_write.write_all(&buf[..n]).await?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        #[allow(unreachable_code)]
+        Ok::<(), std::io::Error>(())
+    };
+
+    tokio::try_join!(stream_to_udp, udp_to_stream).map_err(SocksError::Io)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,7 +492,7 @@ mod tests {
 
     #[async_trait]
     impl RelayConnector for TestConnector {
-        async fn connect(&self, _target: &TargetAddr) -> Result<BoxedStream, SocksError> {
+        async fn connect(&self, _target: &TargetAddr, _cmd: u8) -> Result<BoxedStream, SocksError> {
             let mut guard = self.streams.lock().await;
             guard
                 .pop()

@@ -1,9 +1,19 @@
-use crate::kcp::client::{RecvStream, SendStream};
 use std::io;
+#[cfg(feature = "kcp")]
 use std::pin::Pin;
+#[cfg(feature = "kcp")]
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+#[cfg(feature = "kcp")]
+use tokio::io::ReadBuf;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+/// Default buffer size for bidirectional relaying (32KB).
+pub const DEFAULT_RELAY_BUFFER_SIZE: usize = 32768;
+
+#[cfg(feature = "kcp")]
+use crate::kcp::client::{RecvStream, SendStream};
+
+#[cfg(feature = "kcp")]
 /// Stream wrapper that implements [`AsyncRead`] and [`AsyncWrite`] for Paniq (KCP) sessions.
 ///
 /// This provides a standard socket-like interface over the underlying split [`SendStream`] and [`RecvStream`].
@@ -19,6 +29,7 @@ pub struct PaniqStream {
     recv: RecvStream,
 }
 
+#[cfg(feature = "kcp")]
 impl PaniqStream {
     /// Create a new `PaniqStream` from a pair of constituent halves.
     pub fn new(send: SendStream, recv: RecvStream) -> Self {
@@ -34,6 +45,7 @@ impl PaniqStream {
     }
 }
 
+#[cfg(feature = "kcp")]
 impl AsyncRead for PaniqStream {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -44,6 +56,7 @@ impl AsyncRead for PaniqStream {
     }
 }
 
+#[cfg(feature = "kcp")]
 impl AsyncWrite for PaniqStream {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -85,4 +98,60 @@ impl AsyncWrite for PaniqStream {
             Poll::Ready(Ok(()))
         }
     }
+}
+
+pub trait IoStream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> IoStream for T {}
+
+/// Check if an error represents an expected connection close.
+/// Includes standard IO errors and smux-specific errors.
+pub fn is_expected_close_error(e: &std::io::Error) -> bool {
+    // Check standard error kinds
+    if matches!(
+        e.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::ConnectionAborted
+    ) {
+        return true;
+    }
+    // Check for smux-specific errors (async-smux returns these as io::Error)
+    let error_msg = e.to_string().to_lowercase();
+    error_msg.contains("tx is already closed")
+        || error_msg.contains("rx is already closed")
+        || error_msg.contains("stream is closed")
+        || error_msg.contains("connection closed")
+}
+
+/// Read a frame prefixed by a 16-bit big-endian length.
+pub async fn read_u16_frame<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    max_len: usize,
+) -> io::Result<Vec<u8>> {
+    let mut len_buf = [0u8; 2];
+    reader.read_exact(&mut len_buf).await?;
+    let len = u16::from_be_bytes(len_buf) as usize;
+    if len > max_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("frame length {} exceeds maximum {}", len, max_len),
+        ));
+    }
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).await?;
+    Ok(buf)
+}
+
+/// Write a frame prefixed by a 16-bit big-endian length.
+pub async fn write_u16_frame<W: AsyncWrite + Unpin>(writer: &mut W, data: &[u8]) -> io::Result<()> {
+    if data.len() > u16::MAX as usize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame length exceeds u16::MAX",
+        ));
+    }
+    writer.write_all(&(data.len() as u16).to_be_bytes()).await?;
+    writer.write_all(data).await?;
+    Ok(())
 }
