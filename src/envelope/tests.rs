@@ -47,7 +47,7 @@ fn padding_policy_respects_bounds() {
         burst_prob: 0.0,
     };
     let pad = policy.padding_len(3, 10, &mut rng);
-    assert!(pad >= 2 && pad <= 4);
+    assert!((2..=4).contains(&pad));
 }
 
 #[test]

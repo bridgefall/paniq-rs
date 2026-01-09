@@ -191,7 +191,7 @@ fn mac1_matches_golden_vectors() {
         let key = hex_decode(&mac_vec.key_hex).unwrap();
         let input = hex_decode(&mac_vec.input_hex).unwrap();
         let mac = compute_mac1(&key, &input).expect("mac1");
-        assert_eq!(hex_encode(&mac), mac_vec.output_hex);
+        assert_eq!(hex_encode(mac), mac_vec.output_hex);
         verify_mac1(&key, &input, &mac).expect("verify");
     }
 }

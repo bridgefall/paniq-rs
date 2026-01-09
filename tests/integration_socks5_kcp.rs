@@ -349,7 +349,7 @@ async fn soak_socks5_over_kcp_30s() {
         }
 
         iterations += 1;
-        if iterations % 1000 == 0 {
+        if iterations.is_multiple_of(1000) {
             println!("Soak iteration {}", iterations);
         }
     }

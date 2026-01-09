@@ -1376,96 +1376,6 @@ impl KcpClient {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compute_bdp_window_uses_mss() {
-        let mtu = 1400;
-        let target_bps = 80_000_000;
-        let rtt_ms = 100;
-        let window = compute_bdp_window(mtu, target_bps, rtt_ms).unwrap();
-        assert_eq!(window, 727);
-    }
-
-    #[test]
-    fn resolve_kcp_windows_prefers_explicit_send_window() {
-        let mtu_packet = 1350;
-        let max_payload = 1200;
-        let target_bps = 80_000_000;
-        let rtt_ms = 100;
-        let explicit_send = 2000;
-
-        let expected_bdp = compute_bdp_window(
-            compute_kcp_mtu(mtu_packet, max_payload, false, 0),
-            target_bps,
-            rtt_ms,
-        )
-        .unwrap();
-
-        let (snd, rcv, max_q) = resolve_kcp_windows(
-            mtu_packet,
-            max_payload,
-            Some(explicit_send),
-            None,
-            Some(target_bps),
-            Some(rtt_ms),
-            None,
-            false,
-            0,
-        );
-
-        assert_eq!(snd, explicit_send);
-        let expected_rcv = expected_bdp.max(KCP_RCV_WND);
-        assert_eq!(rcv, expected_rcv);
-        assert_eq!(max_q, explicit_send);
-    }
-
-    #[test]
-    fn should_accept_send_respects_queue_limit() {
-        let mut stats = KcpStats::default();
-        stats.snd_queue_size = 9;
-        assert!(should_accept_send(&stats, 10));
-        stats.snd_queue_size = 10;
-        assert!(!should_accept_send(&stats, 10));
-        assert!(!should_accept_send(&stats, 0));
-    }
-
-    #[test]
-    fn coalesce_write_batch_prefers_pending_over_channel() {
-        let (tx, mut rx) = mpsc::channel(4);
-        tx.try_send(Bytes::from_static(b"cc")).unwrap();
-
-        let mut pending = VecDeque::new();
-        pending.push_back(Bytes::from_static(b"bb"));
-
-        let out = coalesce_write_batch(Bytes::from_static(b"aa"), &mut pending, &mut rx, 6);
-
-        assert_eq!(&out[..], b"aabbcc");
-        assert!(pending.is_empty());
-        assert!(matches!(
-            rx.try_recv(),
-            Err(mpsc::error::TryRecvError::Empty)
-        ));
-    }
-
-    #[test]
-    fn coalesce_write_batch_respects_limit_and_keeps_pending() {
-        let (tx, mut rx) = mpsc::channel(4);
-        tx.try_send(Bytes::from_static(b"cc")).unwrap();
-
-        let mut pending = VecDeque::new();
-        pending.push_back(Bytes::from_static(b"bbbb"));
-
-        let out = coalesce_write_batch(Bytes::from_static(b"aa"), &mut pending, &mut rx, 5);
-
-        assert_eq!(&out[..], b"aa");
-        assert_eq!(&pending.front().unwrap()[..], b"bbbb");
-        assert_eq!(&rx.try_recv().unwrap()[..], b"cc");
-    }
-}
-
 /// Run the KCP engine for client-side connection.
 #[allow(clippy::too_many_arguments)]
 async fn run_kcp_engine_client(
@@ -1682,6 +1592,99 @@ async fn run_kcp_engine_client(
         let _ = engine.flush().await;
     }
 }
+
 const KCP_NODELAY_INTERVAL_MS: u32 = 10;
 const KCP_FAST_RESEND: u32 = 2;
 const KCP_NO_CONGESTION: bool = true;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_bdp_window_uses_mss() {
+        let mtu = 1400;
+        let target_bps = 80_000_000;
+        let rtt_ms = 100;
+        let window = compute_bdp_window(mtu, target_bps, rtt_ms).unwrap();
+        assert_eq!(window, 727);
+    }
+
+    #[test]
+    fn resolve_kcp_windows_prefers_explicit_send_window() {
+        let mtu_packet = 1350;
+        let max_payload = 1200;
+        let target_bps = 80_000_000;
+        let rtt_ms = 100;
+        let explicit_send = 2000;
+
+        let expected_bdp = compute_bdp_window(
+            compute_kcp_mtu(mtu_packet, max_payload, false, 0),
+            target_bps,
+            rtt_ms,
+        )
+        .unwrap();
+
+        let (snd, rcv, max_q) = resolve_kcp_windows(
+            mtu_packet,
+            max_payload,
+            Some(explicit_send),
+            None,
+            Some(target_bps),
+            Some(rtt_ms),
+            None,
+            false,
+            0,
+        );
+
+        assert_eq!(snd, explicit_send);
+        let expected_rcv = expected_bdp.max(KCP_RCV_WND);
+        assert_eq!(rcv, expected_rcv);
+        assert_eq!(max_q, explicit_send);
+    }
+
+    #[test]
+    fn should_accept_send_respects_queue_limit() {
+        let mut stats = KcpStats {
+            snd_queue_size: 9,
+            ..Default::default()
+        };
+        assert!(should_accept_send(&stats, 10));
+        stats.snd_queue_size = 10;
+        assert!(!should_accept_send(&stats, 10));
+        assert!(!should_accept_send(&stats, 0));
+    }
+
+    #[test]
+    fn coalesce_write_batch_prefers_pending_over_channel() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(Bytes::from_static(b"cc")).unwrap();
+
+        let mut pending = VecDeque::new();
+        pending.push_back(Bytes::from_static(b"bb"));
+
+        let out = coalesce_write_batch(Bytes::from_static(b"aa"), &mut pending, &mut rx, 6);
+
+        assert_eq!(&out[..], b"aabbcc");
+        assert!(pending.is_empty());
+        assert!(matches!(
+            rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn coalesce_write_batch_respects_limit_and_keeps_pending() {
+        let (tx, mut rx) = mpsc::channel(4);
+        tx.try_send(Bytes::from_static(b"cc")).unwrap();
+
+        let mut pending = VecDeque::new();
+        pending.push_back(Bytes::from_static(b"bbbb"));
+
+        let out = coalesce_write_batch(Bytes::from_static(b"aa"), &mut pending, &mut rx, 5);
+
+        assert_eq!(&out[..], b"aa");
+        assert_eq!(&pending.front().unwrap()[..], b"bbbb");
+        assert_eq!(&rx.try_recv().unwrap()[..], b"cc");
+    }
+}

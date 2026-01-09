@@ -39,7 +39,7 @@ fn load_benchmark_profile() -> Result<Profile, Box<dyn std::error::Error + Send 
         path.to_string_lossy().to_string()
     });
 
-    Ok(Profile::from_file(profile_path)?)
+    Profile::from_file(profile_path)
 }
 
 /// Generate test data - patterned bytes to avoid compression artifacts
@@ -205,7 +205,7 @@ async fn socks5_download(
     }
 
     // Read response body
-    let mb = (expected_bytes + (BYTES_PER_MB - 1)) / BYTES_PER_MB;
+    let mb = expected_bytes.div_ceil(BYTES_PER_MB);
     let soft_deadline = Instant::now() + TRANSFER_TIMEOUT_PER_MB * mb as u32;
     let mut warned = false;
     while data.len() < expected_bytes {

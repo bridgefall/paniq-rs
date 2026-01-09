@@ -28,7 +28,7 @@ impl StackHarness {
             path.to_string_lossy().to_string()
         });
 
-        Ok(Profile::from_file(profile_path)?)
+        Profile::from_file(profile_path)
     }
 
     /// Spawn a new full stack with test defaults.
